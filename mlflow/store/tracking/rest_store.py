@@ -52,6 +52,7 @@ from mlflow.protos import databricks_pb2
 from mlflow.protos.databricks_pb2 import INTERNAL_ERROR
 from mlflow.protos.service_pb2 import (
     AddDatasetToExperiments,
+    ArchiveTraces,
     BatchGetTraces,
     CalculateTraceFilterCorrelation,
     CreateAssessment,
@@ -463,6 +464,29 @@ class RestStore(WorkspaceRestStoreMixin, RestGatewayStoreMixin, AbstractStore):
             )
             res = self._call_endpoint(DeleteTraces, req_body)
             return res.traces_deleted
+
+    def _archive_traces(
+        self,
+        workspace: str | None = None,
+        all_workspaces: bool = False,
+        older_than_days: float | None = None,
+        max_db_size_mb: float | None = None,
+        trace_id: str | None = None,
+        experiment_id: str | None = None,
+    ) -> int:
+        msg = ArchiveTraces(all_workspaces=all_workspaces)
+        if workspace is not None:
+            msg.workspace = workspace
+        if older_than_days is not None:
+            msg.older_than_days = older_than_days
+        if max_db_size_mb is not None:
+            msg.max_db_size_mb = max_db_size_mb
+        if trace_id is not None and hasattr(msg, "trace_id"):
+            msg.trace_id = trace_id
+        if experiment_id is not None and hasattr(msg, "experiment_id"):
+            msg.experiment_id = experiment_id
+        res = self._call_endpoint(ArchiveTraces, message_to_json(msg))
+        return res.traces_archived or 0
 
     def get_trace_info(self, trace_id: str) -> TraceInfo:
         """

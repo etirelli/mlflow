@@ -1865,6 +1865,12 @@ class SqlSpan(Base):
     Uses LONGTEXT in MySQL to support large spans (up to 4GB).
     """
 
+    content_size = Column(BigInteger, nullable=False, default=0, server_default=sa.text("0"))
+    """
+    Byte length of span content at write time. Used for size-based trace archival
+    policy without SUM(LENGTH(content)) at query time.
+    """
+
     dimension_attributes = Column(MutableJSON, nullable=True)
     """
     Dimension attributes JSON: `JSON`. Optional field for storing reserved span attributes for

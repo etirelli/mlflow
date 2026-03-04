@@ -9,6 +9,7 @@ AVAILABLE COMMANDS:
     search              Search traces with filtering, sorting, and field selection
     get                 Retrieve detailed trace information as JSON
     delete              Delete traces by ID or timestamp criteria
+    archive             Archive traces by age/size and optionally by workspace
     set-tag             Add tags to traces
     delete-tag          Remove tags from traces
     log-feedback        Log evaluation feedback/scores to traces
@@ -67,7 +68,9 @@ For detailed help on any command, use:
 
 import json
 import os
+import re
 import warnings
+from datetime import timedelta
 from typing import Literal
 
 import click
@@ -471,6 +474,160 @@ def delete_traces(
         max_traces=max_traces,
     )
     click.echo(f"Deleted {count} trace(s) from experiment {experiment_id}.")
+
+
+def _parse_older_than_to_days(older_than: str) -> float:
+    """Parse a duration string (e.g. 90d, 24h, 1d2h) to days."""
+    regex = re.compile(
+        r"^((?P<days>[\.\d]+?)d)?((?P<hours>[\.\d]+?)h)?((?P<minutes>[\.\d]+?)m)?"
+        r"((?P<seconds>[\.\d]+?)s)?$"
+    )
+    parts = regex.match(older_than.strip())
+    if parts is None:
+        raise click.UsageError(
+            f"Could not parse time from '{older_than}'. Use format like 90d, 24h, 1d2h30m, or 2.5d."
+        )
+    time_params = {name: float(param) for name, param in parts.groupdict().items() if param}
+    if not time_params:
+        raise click.UsageError(
+            f"Could not parse time from '{older_than}'. Use format like 90d, 24h, 1d2h30m, or 2.5d."
+        )
+    delta = timedelta(**time_params)
+    return delta.total_seconds() / (24 * 3600)
+
+
+def _parse_size_to_mb(size_str: str) -> float:
+    """Parse a size string (e.g. 10GB, 100MB, 500) to MB. Bare number is treated as MB."""
+    size_str = size_str.strip()
+    match = re.match(r"^(?P<value>[\.\d]+)\s*(?P<unit>GB|MB|KB)?$", size_str, re.IGNORECASE)
+    if not match:
+        raise click.UsageError(
+            f"Could not parse size from '{size_str}'. Use format like 10GB, 100MB, or 500."
+        )
+    value = float(match.group("value"))
+    unit = (match.group("unit") or "MB").upper()
+    if unit == "KB":
+        return value / 1024
+    if unit == "MB":
+        return value
+    if unit == "GB":
+        return value * 1024
+    return value
+
+
+@commands.command("archive")
+@mlflow_mcp(tool_name="archive_traces")
+@click.option(
+    "--workspace",
+    envvar="MLFLOW_WORKSPACE",
+    type=click.STRING,
+    help="Workspace name to archive traces from. When workspaces are enabled, use one of "
+    "--workspace or --all-workspaces.",
+)
+@click.option(
+    "--all-workspaces",
+    is_flag=True,
+    help="Archive traces from all workspaces. When workspaces are enabled, use one of "
+    "--workspace or --all-workspaces.",
+)
+@click.option(
+    "--older-than",
+    type=click.STRING,
+    help="Only archive traces older than this duration (e.g. 90d, 24h, 1d2h30m).",
+)
+@click.option(
+    "--max-db-size",
+    type=click.STRING,
+    help="Archive until total DB span content is under this size (e.g. 10GB, 100MB).",
+)
+@click.option(
+    "--trace-id",
+    type=click.STRING,
+    default=None,
+    help=(
+        "Archive only this trace (by ID). When set, --older-than and --max-db-size "
+        "are not required."
+    ),
+)
+@click.option(
+    "--experiment-id",
+    "-x",
+    envvar=MLFLOW_EXPERIMENT_ID.name,
+    type=click.STRING,
+    default=None,
+    help=(
+        "Limit archival to traces in this experiment. Can be set via MLFLOW_EXPERIMENT_ID env var."
+    ),
+)
+def archive_traces(
+    workspace: str | None = None,
+    all_workspaces: bool = False,
+    older_than: str | None = None,
+    max_db_size: str | None = None,
+    trace_id: str | None = None,
+    experiment_id: str | None = None,
+) -> None:
+    """
+    Archive traces from the tracking store to the trace repository.
+
+    Moves span content to the configured trace archival location (traces.pb) and clears
+    span content in the database. Specify at least one of --older-than, --max-db-size,
+    or --trace-id. When the server has workspaces enabled, specify exactly one of
+    --workspace or --all-workspaces (unless --trace-id is set).
+
+    \b
+    Examples:
+    # Archive traces older than 90 days
+    mlflow traces archive --older-than 90d
+
+    \b
+    # Archive a specific trace by ID
+    mlflow traces archive --trace-id tr-abc123
+
+    \b
+    # Archive traces in a specific experiment
+    mlflow traces archive --experiment-id 1 --older-than 30d
+
+    \b
+    # Archive in a specific workspace
+    mlflow traces archive --workspace my-ws --older-than 30d
+
+    \b
+    # Archive until DB span content is under 10 GB
+    mlflow traces archive --max-db-size 10GB --older-than 7d
+
+    \b
+    # Archive in all workspaces
+    mlflow traces archive --all-workspaces --older-than 60d
+    """
+    from mlflow.exceptions import MlflowException
+
+    older_than_days = None
+    if older_than is not None:
+        older_than_days = _parse_older_than_to_days(older_than)
+
+    max_db_size_mb = None
+    if max_db_size is not None:
+        max_db_size_mb = _parse_size_to_mb(max_db_size)
+
+    if trace_id is None and older_than_days is None and max_db_size_mb is None:
+        raise click.UsageError(
+            "Specify at least one of --older-than, --max-db-size, or --trace-id."
+        )
+
+    client = TracingClient()
+    try:
+        count = client.archive_traces(
+            workspace=workspace,
+            all_workspaces=all_workspaces,
+            older_than_days=older_than_days,
+            max_db_size_mb=max_db_size_mb,
+            trace_id=trace_id,
+            experiment_id=experiment_id,
+        )
+    except MlflowException as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"Archived {count} trace(s).")
 
 
 @commands.command("set-tag")

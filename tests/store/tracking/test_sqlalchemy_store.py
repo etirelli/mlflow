@@ -7723,6 +7723,143 @@ def test_delete_traces_raises_error(store):
         store.delete_traces(exp_id, 100, max_traces=0)
 
 
+def test_archive_traces_requires_older_than_or_max_db_size(store: SqlAlchemyStore):
+    with pytest.raises(
+        MlflowException,
+        match=r"Specify at least one of older_than_days, max_db_size_mb, or trace_id|"
+        r"When workspaces are enabled, specify either workspace or all_workspaces",
+    ):
+        store.archive_traces(older_than_days=None, max_db_size_mb=None)
+
+
+def test_archive_traces_returns_zero_when_no_candidates(
+    store: SqlAlchemyStore, workspaces_enabled: bool
+):
+    exp_id = store.create_experiment("test")
+    _create_trace(store, "tr-1", exp_id, request_time=int(time.time() * 1000))
+    # All traces are recent; older_than_days=365 should select none
+    kwargs = {"older_than_days": 365.0}
+    if workspaces_enabled:
+        kwargs["all_workspaces"] = True
+    archived = store.archive_traces(**kwargs)
+    assert archived == 0
+
+
+def _create_trace_with_spans(store, trace_id, experiment_id, request_time):
+    """Helper: create a trace and log spans for it, returning (trace_info, span)."""
+    trace_info = _create_trace(store, trace_id, experiment_id, request_time=request_time)
+    span = create_test_span(trace_id=trace_info.trace_id, name="test_span")
+    store.log_spans(experiment_id, [span])
+    return trace_info, span
+
+
+def test_archive_traces_happy_path(store: SqlAlchemyStore, workspaces_enabled: bool):
+    exp_id = store.create_experiment("archive-test")
+    # Create a trace with a timestamp old enough to be archived (0 = epoch)
+    trace_info, span = _create_trace_with_spans(store, "tr-archive-hp", exp_id, request_time=0)
+
+    # Verify span content exists before archival
+    with store.ManagedSessionMaker() as session:
+        sql_span = session.query(SqlSpan).filter(SqlSpan.trace_id == trace_info.trace_id).first()
+        assert sql_span is not None
+        assert sql_span.content != ""
+        assert sql_span.content_size > 0
+
+    # Archive traces older than 1 day (our trace is at epoch, so it qualifies)
+    kwargs = {"older_than_days": 0.001}
+    if workspaces_enabled:
+        kwargs["all_workspaces"] = True
+    archived = store.archive_traces(**kwargs)
+    assert archived == 1
+
+    # Verify span content cleared and tags updated
+    with store.ManagedSessionMaker() as session:
+        sql_span = session.query(SqlSpan).filter(SqlSpan.trace_id == trace_info.trace_id).first()
+        assert sql_span is not None
+        assert sql_span.content == ""
+        assert sql_span.content_size == 0
+
+        # Verify SpansLocation tag set to TRACES_REPO
+        location_tag = (
+            session.query(SqlTraceTag)
+            .filter(
+                SqlTraceTag.request_id == trace_info.trace_id,
+                SqlTraceTag.key == TraceTagKey.SPANS_LOCATION,
+            )
+            .first()
+        )
+        assert location_tag is not None
+        assert location_tag.value == SpansLocation.TRACES_REPO.value
+
+
+def test_archive_traces_by_trace_id(store: SqlAlchemyStore):
+    exp_id = store.create_experiment("archive-by-id")
+    trace_info, _ = _create_trace_with_spans(store, "tr-by-id", exp_id, request_time=0)
+
+    archived = store.archive_traces(trace_id=trace_info.trace_id)
+    assert archived == 1
+
+    # Verify it was archived
+    with store.ManagedSessionMaker() as session:
+        sql_span = session.query(SqlSpan).filter(SqlSpan.trace_id == trace_info.trace_id).first()
+        assert sql_span.content == ""
+        assert sql_span.content_size == 0
+
+
+def test_archive_traces_round_trip(store: SqlAlchemyStore):
+    exp_id = store.create_experiment("archive-roundtrip")
+    trace_info, span = _create_trace_with_spans(store, "tr-roundtrip", exp_id, request_time=0)
+
+    # Archive
+    archived = store.archive_traces(trace_id=trace_info.trace_id)
+    assert archived == 1
+
+    # Retrieve via the store's get_trace (which should load from trace repo)
+    trace = store.get_trace(trace_info.trace_id)
+    assert trace is not None
+    assert len(trace.data.spans) >= 1
+    # Verify we got the same span back
+    retrieved_span = next(s for s in trace.data.spans if s.name == "test_span")
+    assert retrieved_span.span_id == span.span_id
+
+
+def test_archive_traces_max_db_size(store: SqlAlchemyStore, workspaces_enabled: bool):
+    exp_id = store.create_experiment("archive-size")
+    # Create two old traces with spans
+    _create_trace_with_spans(store, "tr-size-1", exp_id, request_time=0)
+    _create_trace_with_spans(store, "tr-size-2", exp_id, request_time=1000)
+
+    # max_db_size_mb=0 should force all traces to be archived (target size is 0)
+    kwargs = {"older_than_days": 0.001, "max_db_size_mb": 0.000001}
+    if workspaces_enabled:
+        kwargs["all_workspaces"] = True
+    archived = store.archive_traces(**kwargs)
+    assert archived >= 1
+
+    # Verify at least one trace was archived
+    with store.ManagedSessionMaker() as session:
+        archived_tags = (
+            session.query(SqlTraceTag)
+            .filter(
+                SqlTraceTag.key == TraceTagKey.SPANS_LOCATION,
+                SqlTraceTag.value == SpansLocation.TRACES_REPO.value,
+            )
+            .all()
+        )
+        assert len(archived_tags) >= 1
+
+
+def test_content_size_populated_on_log_spans(store: SqlAlchemyStore):
+    exp_id = store.create_experiment("content-size-test")
+    _create_trace_with_spans(store, "tr-cs", exp_id, request_time=0)
+
+    with store.ManagedSessionMaker() as session:
+        sql_span = session.query(SqlSpan).filter(SqlSpan.trace_id == "tr-cs").first()
+        assert sql_span is not None
+        assert sql_span.content_size > 0
+        assert sql_span.content_size == len(sql_span.content.encode("utf-8"))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_async", [False, True])
 async def test_log_spans(store: SqlAlchemyStore, is_async: bool):

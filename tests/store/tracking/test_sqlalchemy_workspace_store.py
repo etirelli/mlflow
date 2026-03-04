@@ -2103,3 +2103,71 @@ def test_gateway_config_resolver_scopes_endpoints(gateway_workspace_store):
         )
         assert config_a.endpoint_id == endpoint_a.endpoint_id
         assert config_a.models[0].secret_value["api_key"] == "val-a"
+
+
+def test_archive_traces_requires_workspace_when_workspaces_enabled(workspace_tracking_store):
+    with pytest.raises(
+        MlflowException,
+        match=r"When workspaces are enabled, specify either workspace or all_workspaces",
+    ):
+        workspace_tracking_store.archive_traces(older_than_days=1.0)
+
+
+def test_archive_traces_workspace_scoped(workspace_tracking_store):
+    with WorkspaceContext("team-a"):
+        exp_id = workspace_tracking_store.create_experiment("archive-exp")
+        _create_trace(
+            workspace_tracking_store,
+            "tr-archive-1",
+            exp_id,
+            request_time=int(time.time() * 1000),
+        )
+    # All traces are recent; older_than_days=365 should select none
+    archived = workspace_tracking_store.archive_traces(workspace="team-a", older_than_days=365.0)
+    assert archived == 0
+
+
+def test_archive_traces_workspace_happy_path(workspace_tracking_store):
+    from mlflow.store.tracking.dbmodels.models import SqlSpan, SqlTraceTag
+    from mlflow.tracing.constant import SpansLocation, TraceTagKey
+
+    with WorkspaceContext("team-a"):
+        exp_id = workspace_tracking_store.create_experiment("archive-ws-hp")
+        trace_info = _create_trace(
+            workspace_tracking_store,
+            "tr-ws-archive",
+            exp_id,
+            request_time=0,
+        )
+        span = create_test_span(trace_id=trace_info.trace_id, name="ws_span")
+        workspace_tracking_store.log_spans(exp_id, [span])
+
+        # Archive the old trace (within workspace context)
+        archived = workspace_tracking_store.archive_traces(
+            workspace="team-a", older_than_days=0.001
+        )
+        assert archived == 1
+
+    # Verify span content cleared
+    with workspace_tracking_store.ManagedSessionMaker() as session:
+        sql_span = session.query(SqlSpan).filter(SqlSpan.trace_id == trace_info.trace_id).first()
+        assert sql_span is not None
+        assert sql_span.content == ""
+        assert sql_span.content_size == 0
+
+        location_tag = (
+            session.query(SqlTraceTag)
+            .filter(
+                SqlTraceTag.request_id == trace_info.trace_id,
+                SqlTraceTag.key == TraceTagKey.SPANS_LOCATION,
+            )
+            .first()
+        )
+        assert location_tag is not None
+        assert location_tag.value == SpansLocation.TRACES_REPO.value
+
+    # Round-trip: retrieve the archived trace
+    with WorkspaceContext("team-a"):
+        trace = workspace_tracking_store.get_trace(trace_info.trace_id)
+        assert trace is not None
+        assert len(trace.data.spans) >= 1

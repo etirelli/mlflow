@@ -120,6 +120,25 @@ class TracingClient:
             trace_ids=trace_ids,
         )
 
+    def archive_traces(
+        self,
+        workspace: str | None = None,
+        all_workspaces: bool = False,
+        older_than_days: float | None = None,
+        max_db_size_mb: float | None = None,
+        trace_id: str | None = None,
+        experiment_id: str | None = None,
+    ) -> int:
+        """Archive traces from the tracking store to the trace repository."""
+        return self.store.archive_traces(
+            workspace=workspace,
+            all_workspaces=all_workspaces,
+            older_than_days=older_than_days,
+            max_db_size_mb=max_db_size_mb,
+            trace_id=trace_id,
+            experiment_id=experiment_id,
+        )
+
     def get_trace_info(self, trace_id: str) -> TraceInfo:
         """
         Get the trace info matching the ``trace_id``.

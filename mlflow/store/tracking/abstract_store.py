@@ -335,6 +335,79 @@ class AbstractStore(GatewayStoreMixin):
     ) -> int:
         raise NotImplementedError
 
+    def archive_traces(
+        self,
+        workspace: str | None = None,
+        all_workspaces: bool = False,
+        older_than_days: float | None = None,
+        max_db_size_mb: float | None = None,
+        trace_id: str | None = None,
+        experiment_id: str | None = None,
+    ) -> int:
+        """
+        Archive traces from the tracking store to the trace repository.
+
+        Moves span content from the database to the configured trace archival location
+        (traces.pb) and clears span content in the DB. When the store supports workspaces,
+        either ``workspace`` or ``all_workspaces`` must be specified (unless ``trace_id``
+        is set, in which case workspace can be inferred from the trace).
+
+        Args:
+            workspace: Optional workspace name to archive traces from.
+            all_workspaces: If True, archive from all workspaces (handler iterates).
+            older_than_days: Only archive traces older than this many days.
+            max_db_size_mb: Optional cap: archive until total DB span size is under this (MB).
+            trace_id: Optional trace ID to archive only this trace (then older_than_days/
+                max_db_size_mb not required).
+            experiment_id: Optional experiment ID to limit archival to traces in that experiment.
+
+        Returns:
+            The number of traces archived.
+        """
+        supports_workspaces = getattr(self, "supports_workspaces", False)
+        if supports_workspaces and not trace_id and not workspace and not all_workspaces:
+            raise MlflowException.invalid_parameter_value(
+                "When workspaces are enabled, specify either workspace or all_workspaces."
+            )
+        if trace_id is None and older_than_days is None and max_db_size_mb is None:
+            raise MlflowException.invalid_parameter_value(
+                "Specify at least one of older_than_days, max_db_size_mb, or trace_id."
+            )
+        if older_than_days is not None and older_than_days <= 0:
+            raise MlflowException.invalid_parameter_value(
+                f"older_than_days must be positive, got {older_than_days}."
+            )
+        if max_db_size_mb is not None and max_db_size_mb <= 0:
+            raise MlflowException.invalid_parameter_value(
+                f"max_db_size_mb must be positive, got {max_db_size_mb}."
+            )
+        return self._archive_traces(
+            workspace=workspace,
+            all_workspaces=all_workspaces,
+            older_than_days=older_than_days,
+            max_db_size_mb=max_db_size_mb,
+            trace_id=trace_id,
+            experiment_id=experiment_id,
+        )
+
+    def _archive_traces(
+        self,
+        workspace: str | None = None,
+        all_workspaces: bool = False,
+        older_than_days: float | None = None,
+        max_db_size_mb: float | None = None,
+        trace_id: str | None = None,
+        experiment_id: str | None = None,
+    ) -> int:
+        raise NotImplementedError(f"{self.__class__.__name__} does not support archive_traces.")
+
+    def get_trace_repository_artifact_uri(self, trace_info: "TraceInfo") -> str | None:
+        """
+        Return the artifact URI for loading trace data from the trace repository, or None
+        if the store does not support trace archival or the trace is not archived.
+        """
+        return None
+
     def get_trace_info(self, trace_id: str) -> TraceInfo:
         """
         Get the trace matching the `trace_id`.
@@ -419,6 +492,12 @@ class AbstractStore(GatewayStoreMixin):
     ) -> tuple[list[TraceInfo], str | None]:
         """
         Return traces that match the given list of search expressions within the experiments.
+
+        Trace-level and column-based span filters apply to all traces (including archived ones,
+        whose metadata and span columns remain in the DB). JSON-based span filters
+        (e.g. ``span.attributes.*`` or filters that inspect ``spans.content``) do not match
+        archived traces, because span content is cleared after archival; only trace metadata
+        and non-content span columns are retained.
 
         Args:
             experiment_ids: List of experiment ids to scope the search.

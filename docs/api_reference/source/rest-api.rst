@@ -4968,6 +4968,32 @@ AddDatasetToExperiments
 | experiment_ids | An array of ``STRING`` | Experiment IDs to associate with the dataset             |
 +----------------+------------------------+----------------------------------------------------------+
 
+.. _mlflowArchiveTraces:
+
+ArchiveTraces
+-------------
+
+
+
+
+
+
++-----------------+------------+-----------------------------------------------------------------------------------------------------------------+
+|   Field Name    |    Type    |                                                   Description                                                   |
++=================+============+=================================================================================================================+
+| workspace       | ``STRING`` | Workspace name to archive traces from. When workspaces are enabled, specify one of workspace or all_workspaces. |
++-----------------+------------+-----------------------------------------------------------------------------------------------------------------+
+| all_workspaces  | ``BOOL``   | If true, archive traces from all workspaces (server iterates and calls store per workspace).                    |
++-----------------+------------+-----------------------------------------------------------------------------------------------------------------+
+| older_than_days | ``DOUBLE`` | Only archive traces older than this many days.                                                                  |
++-----------------+------------+-----------------------------------------------------------------------------------------------------------------+
+| max_db_size_mb  | ``DOUBLE`` | Optional: archive until total DB span content is under this size (MB).                                          |
++-----------------+------------+-----------------------------------------------------------------------------------------------------------------+
+| trace_id        | ``STRING`` | Optional: archive only this trace (by ID). When set, older_than_days and max_db_size_mb are not required.       |
++-----------------+------------+-----------------------------------------------------------------------------------------------------------------+
+| experiment_id   | ``STRING`` | Optional: limit archival to traces in this experiment (experiment ID string).                                   |
++-----------------+------------+-----------------------------------------------------------------------------------------------------------------+
+
 .. _mlflowassessmentsAssessment:
 
 Assessment
@@ -5224,15 +5250,17 @@ CreateWorkspace
 Create a new workspace.
 
 
-+-----------------------+------------+--------------------------------------------------------------------+
-|      Field Name       |    Type    |                            Description                             |
-+=======================+============+====================================================================+
-| name                  | ``STRING`` | Workspace name to create. This field is required.                  |
-+-----------------------+------------+--------------------------------------------------------------------+
-| description           | ``STRING`` | Optional workspace description.                                    |
-+-----------------------+------------+--------------------------------------------------------------------+
-| default_artifact_root | ``STRING`` | Optional default artifact root override to apply at creation time. |
-+-----------------------+------------+--------------------------------------------------------------------+
++-------------------------+------------+--------------------------------------------------------------------+
+|       Field Name        |    Type    |                            Description                             |
++=========================+============+====================================================================+
+| name                    | ``STRING`` | Workspace name to create. This field is required.                  |
++-------------------------+------------+--------------------------------------------------------------------+
+| description             | ``STRING`` | Optional workspace description.                                    |
++-------------------------+------------+--------------------------------------------------------------------+
+| default_artifact_root   | ``STRING`` | Optional default artifact root override to apply at creation time. |
++-------------------------+------------+--------------------------------------------------------------------+
+| trace_archival_location | ``STRING`` | Optional trace repository root override to apply at creation time. |
++-------------------------+------------+--------------------------------------------------------------------+
 
 .. _mlflowDataset:
 
@@ -7525,6 +7553,22 @@ Response
 | traces_deleted | ``INT32`` |             |
 +----------------+-----------+-------------+
 
+.. _mlflowArchiveTracesResponse:
+
+Response
+--------
+
+
+
+
+
+
++-----------------+-----------+-------------+
+|   Field Name    |   Type    | Description |
++=================+===========+=============+
+| traces_archived | ``INT32`` |             |
++-----------------+-----------+-------------+
+
 .. _mlflowCalculateTraceFilterCorrelationResponse:
 
 Response
@@ -8658,15 +8702,17 @@ UpdateWorkspace
 Update workspace metadata.
 
 
-+-----------------------+------------+----------------------------------------------------------+
-|      Field Name       |    Type    |                       Description                        |
-+=======================+============+==========================================================+
-| workspace_name        | ``STRING`` | Name of the workspace to update. This field is required. |
-+-----------------------+------------+----------------------------------------------------------+
-| description           | ``STRING`` | Optional description update.                             |
-+-----------------------+------------+----------------------------------------------------------+
-| default_artifact_root | ``STRING`` | Optional default artifact root override update.          |
-+-----------------------+------------+----------------------------------------------------------+
++-------------------------+------------+----------------------------------------------------------+
+|       Field Name        |    Type    |                       Description                        |
++=========================+============+==========================================================+
+| workspace_name          | ``STRING`` | Name of the workspace to update. This field is required. |
++-------------------------+------------+----------------------------------------------------------+
+| description             | ``STRING`` | Optional description update.                             |
++-------------------------+------------+----------------------------------------------------------+
+| default_artifact_root   | ``STRING`` | Optional default artifact root override update.          |
++-------------------------+------------+----------------------------------------------------------+
+| trace_archival_location | ``STRING`` | Optional trace repository root override update.          |
++-------------------------+------------+----------------------------------------------------------+
 
 .. _mlflowUpsertDatasetRecords:
 
@@ -8786,15 +8832,17 @@ Workspace
 Workspace metadata returned by workspace APIs.
 
 
-+-----------------------+------------+-------------------------------------------------------------+
-|      Field Name       |    Type    |                         Description                         |
-+=======================+============+=============================================================+
-| name                  | ``STRING`` | The unique workspace name. This field is required.          |
-+-----------------------+------------+-------------------------------------------------------------+
-| description           | ``STRING`` | Optional workspace description.                             |
-+-----------------------+------------+-------------------------------------------------------------+
-| default_artifact_root | ``STRING`` | Optional default artifact root override for this workspace. |
-+-----------------------+------------+-------------------------------------------------------------+
++-------------------------+------------+------------------------------------------------------------------------------+
+|       Field Name        |    Type    |                                 Description                                  |
++=========================+============+==============================================================================+
+| name                    | ``STRING`` | The unique workspace name. This field is required.                           |
++-------------------------+------------+------------------------------------------------------------------------------+
+| description             | ``STRING`` | Optional workspace description.                                              |
++-------------------------+------------+------------------------------------------------------------------------------+
+| default_artifact_root   | ``STRING`` | Optional default artifact root override for this workspace.                  |
++-------------------------+------------+------------------------------------------------------------------------------+
+| trace_archival_location | ``STRING`` | Optional trace repository root override for this workspace (trace archival). |
++-------------------------+------------+------------------------------------------------------------------------------+
 
 .. _mlflowAggregationType:
 

@@ -274,6 +274,10 @@ including either a `host` or `host:port` definition for uri location references 
 Otherwise, all artifact requests will route to the MLflow Tracking server, defeating the purpose of running a distinct artifact server.
 :::
 
+### Trace archival \{#trace-archival}
+
+When using a database backend, trace span content can be archived from the database to object storage to reduce DB size while keeping trace metadata searchable. The server option `--trace-archival-location` (or env `MLFLOW_TRACE_ARCHIVAL_LOCATION`) sets the root URI where archived trace data (`traces.pb`) is stored. If unset, the server defaults to the same location as `--artifacts-destination` when that is set. Use the CLI command `mlflow traces archive` (with `--older-than` and/or `--max-db-size`) to move old traces to the archive; retrieval of archived traces is transparent to clients. When workspaces are enabled, each workspace can override the trace archival location via its `trace_archival_location` setting (create/update workspace API or Python `create_workspace` / `update_workspace`).
+
 ## Secure Tracking Server \{#tracking-auth}
 
 ### Built-in Security Middleware

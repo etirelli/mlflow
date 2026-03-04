@@ -4,6 +4,7 @@ import logging
 from threading import Lock
 from typing import Iterable
 
+import sqlalchemy
 from cachetools import TTLCache
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
@@ -94,6 +95,7 @@ class SqlAlchemyStore(AbstractStore):
                     name=workspace.name,
                     description=workspace.description,
                     default_artifact_root=workspace.default_artifact_root or None,
+                    trace_archival_location=workspace.trace_archival_location or None,
                 )
                 session.add(entity)
                 session.flush()
@@ -119,6 +121,8 @@ class SqlAlchemyStore(AbstractStore):
                 # If the default_artifact_root is an empty string, set it to None to "clear" the
                 # value
                 entity.default_artifact_root = workspace.default_artifact_root or None
+            if workspace.trace_archival_location is not None:
+                entity.trace_archival_location = workspace.trace_archival_location or None
             session.flush()
 
             _logger.info("Updated workspace '%s'", workspace.name)
@@ -221,6 +225,23 @@ class SqlAlchemyStore(AbstractStore):
             return workspace_root, False
 
         return default_artifact_root, True
+
+    def resolve_trace_archival_root(
+        self, global_trace_archival_root: str | None, workspace_name: str
+    ) -> str | None:
+        """Return the workspace's trace_archival_location if set, else None."""
+        try:
+            with self.ManagedSessionMaker() as session:
+                workspace = session.get(SqlWorkspace, workspace_name)
+                if workspace is not None and workspace.trace_archival_location is not None:
+                    return workspace.trace_archival_location
+        except (sqlalchemy.exc.ProgrammingError, sqlalchemy.exc.OperationalError) as e:
+            _logger.debug(
+                "Could not read trace_archival_location from workspaces table: %s. "
+                "Falling back to global trace archival location.",
+                e,
+            )
+        return None
 
     @staticmethod
     def _check_set_default_conflicts(session, workspace_name: str) -> None:

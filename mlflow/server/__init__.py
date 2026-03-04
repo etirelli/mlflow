@@ -33,6 +33,7 @@ from mlflow.server.constants import (
     SECRETS_CACHE_MAX_SIZE_ENV_VAR,
     SECRETS_CACHE_TTL_ENV_VAR,
     SERVE_ARTIFACTS_ENV_VAR,
+    TRACE_ARCHIVAL_LOCATION_ENV_VAR,
 )
 from mlflow.server.handlers import (
     STATIC_PREFIX_ENV_VAR,
@@ -335,6 +336,7 @@ def _run_server(
     env_file=None,
     secrets_cache_ttl=None,
     secrets_cache_max_size=None,
+    trace_archival_location=None,
 ):
     """
     Run the MLflow server, wrapping it in gunicorn, uvicorn, or waitress on windows
@@ -360,6 +362,9 @@ def _run_server(
         env_map[ARTIFACTS_ONLY_ENV_VAR] = "true"
     if artifacts_destination:
         env_map[ARTIFACTS_DESTINATION_ENV_VAR] = artifacts_destination
+    # Trace repository root: use explicit value or fall back to artifact destination
+    if effective_trace_archival_location := trace_archival_location or artifacts_destination:
+        env_map[TRACE_ARCHIVAL_LOCATION_ENV_VAR] = effective_trace_archival_location
     if static_prefix:
         env_map[STATIC_PREFIX_ENV_VAR] = static_prefix
 

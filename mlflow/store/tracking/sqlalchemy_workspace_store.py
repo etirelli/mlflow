@@ -43,6 +43,7 @@ from mlflow.utils import workspace_context, workspace_utils
 from mlflow.utils.time import get_current_time_millis
 from mlflow.utils.uri import (
     append_to_uri_path,
+    resolve_uri_if_local,
 )
 from mlflow.utils.workspace_utils import DEFAULT_WORKSPACE_NAME, WORKSPACES_DIR_NAME
 
@@ -54,10 +55,13 @@ class WorkspaceAwareSqlAlchemyStore(WorkspaceAwareMixin, SqlAlchemyStore):
     Workspace-aware variant of the SQLAlchemy tracking store.
     """
 
-    def __init__(self, db_uri, default_artifact_root):
+    def __init__(self, db_uri, default_artifact_root, trace_archival_root=None):
+        # trace_archival_root is always set when the store is created via the server (bootstrap).
+        # Default None is for non-server usage (e.g. tests, direct instantiation); the base store
+        # then falls back to the artifact root.
         self._workspace_provider = None
         self._workspace_store_uri = workspace_utils.resolve_workspace_store_uri(tracking_uri=db_uri)
-        super().__init__(db_uri, default_artifact_root)
+        super().__init__(db_uri, default_artifact_root, trace_archival_root)
 
     def _get_query(self, session, model):
         query = super()._get_query(session, model)
@@ -466,6 +470,20 @@ class WorkspaceAwareSqlAlchemyStore(WorkspaceAwareMixin, SqlAlchemyStore):
             resolved_root = append_to_uri_path(resolved_root, WORKSPACES_DIR_NAME, workspace)
 
         return append_to_uri_path(resolved_root, str(experiment_id))
+
+    def _get_trace_repository_root(self, session, workspace_name: str) -> str:
+        """
+        Resolve the trace repository root for the workspace.
+
+        Uses the workspace provider (same as _get_artifact_location) to resolve a
+        workspace-specific trace_archival_location if set, otherwise the global root.
+        """
+        workspace_name = workspace_name or self._get_active_workspace()
+        provider = self._get_workspace_provider_instance()
+        global_root = self._trace_archival_root_uri or self.artifact_root_uri
+        resolved_root = provider.resolve_trace_archival_root(global_root, workspace_name)
+        root = resolved_root if resolved_root is not None else global_root
+        return resolve_uri_if_local(root)
 
     def create_experiment(self, name, artifact_location=None, tags=None):
         if artifact_location:

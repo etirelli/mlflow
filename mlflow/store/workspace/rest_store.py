@@ -69,6 +69,10 @@ class RestWorkspaceStore(AbstractStore):
             request_message.description = workspace.description
         if workspace.default_artifact_root is not None:
             request_message.default_artifact_root = workspace.default_artifact_root
+        if workspace.trace_archival_location is not None and hasattr(
+            request_message, "trace_archival_location"
+        ):
+            request_message.trace_archival_location = workspace.trace_archival_location
         try:
             proto = call_endpoint(
                 host_creds=self.get_host_creds(),
@@ -92,6 +96,10 @@ class RestWorkspaceStore(AbstractStore):
             request_message.description = workspace.description
         if workspace.default_artifact_root is not None:
             request_message.default_artifact_root = workspace.default_artifact_root
+        if workspace.trace_archival_location is not None and hasattr(
+            request_message, "trace_archival_location"
+        ):
+            request_message.trace_archival_location = workspace.trace_archival_location
         proto = call_endpoint(
             host_creds=self.get_host_creds(),
             endpoint=f"{WORKSPACES_ENDPOINT}/{_quote_workspace(workspace.name)}",

@@ -1053,6 +1053,42 @@ def test_delete_traces_with_batching():
         assert batch_sizes == [100, 100, 50]
 
 
+def test_archive_traces(workspaces_enabled):
+    try:
+        service_pb2 = __import__("mlflow.protos.service_pb2", fromlist=["ArchiveTraces"])
+    except ImportError:
+        pytest.skip("ArchiveTraces not in generated protos; run generate_protos.py on Linux")
+    if not hasattr(service_pb2, "ArchiveTraces"):
+        pytest.skip("ArchiveTraces not in generated protos; run generate_protos.py on Linux")
+
+    creds = MlflowHostCreds("https://hello")
+    store = RestStore(lambda: creds)
+    response = mock.MagicMock()
+    response.status_code = 200
+    response.text = json.dumps({"traces_archived": 5})
+    with mock.patch("mlflow.utils.rest_utils.http_request", return_value=response) as mock_http:
+        kwargs = {
+            "all_workspaces": False,
+            "older_than_days": 90.0,
+            "max_db_size_mb": None,
+        }
+        if workspaces_enabled:
+            kwargs["workspace"] = "default"
+        # supports_workspaces is already mocked by the fixture for workspace-enabled;
+        # the workspace-disabled fixture does not set it, so archive_traces's
+        # getattr(self, "supports_workspaces", False) falls through to False.
+        store._workspace_support = False
+        res = store.archive_traces(**kwargs)
+        assert res == 5
+        mock_http.assert_called()
+        call_kwargs = mock_http.call_args[1]
+        assert call_kwargs.get("method") == "POST"
+        body = call_kwargs["json"]
+        if isinstance(body, str):
+            body = json.loads(body)
+        assert body.get("older_than_days") == 90.0
+
+
 def test_set_trace_tag():
     creds = MlflowHostCreds("https://hello")
     store = RestStore(lambda: creds)
