@@ -29,12 +29,14 @@ class Workspace:
     name: str
     description: str | None = None
     default_artifact_root: str | None = None
+    traces_destination: str | None = None
 
     def to_dict(self) -> dict[str, str | None]:
         return {
             "name": self.name,
             "description": self.description,
             "default_artifact_root": self.default_artifact_root,
+            "traces_destination": self.traces_destination,
         }
 
     @classmethod
@@ -43,6 +45,7 @@ class Workspace:
             name=payload["name"],
             description=payload.get("description"),
             default_artifact_root=payload.get("default_artifact_root"),
+            traces_destination=payload.get("traces_destination"),
         )
 
     def to_proto(self) -> ProtoWorkspace:
@@ -52,6 +55,8 @@ class Workspace:
             workspace.description = self.description
         if self.default_artifact_root is not None:
             workspace.default_artifact_root = self.default_artifact_root
+        if self.traces_destination is not None:
+            workspace.traces_destination = self.traces_destination
         return workspace
 
     @classmethod
@@ -60,8 +65,12 @@ class Workspace:
         default_artifact_root = (
             proto.default_artifact_root if proto.HasField("default_artifact_root") else None
         )
+        traces_destination = (
+            proto.traces_destination if proto.HasField("traces_destination") else None
+        )
         return cls(
             name=proto.name,
             description=description,
             default_artifact_root=default_artifact_root,
+            traces_destination=traces_destination,
         )

@@ -2481,14 +2481,16 @@ class DeletePromptOptimizationJob(_message.Message):
     def __init__(self, job_id: _Optional[str] = ...) -> None: ...
 
 class Workspace(_message.Message):
-    __slots__ = ("name", "description", "default_artifact_root")
+    __slots__ = ("name", "description", "default_artifact_root", "traces_destination")
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     DEFAULT_ARTIFACT_ROOT_FIELD_NUMBER: _ClassVar[int]
+    TRACES_DESTINATION_FIELD_NUMBER: _ClassVar[int]
     name: str
     description: str
     default_artifact_root: str
-    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., default_artifact_root: _Optional[str] = ...) -> None: ...
+    traces_destination: str
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., default_artifact_root: _Optional[str] = ..., traces_destination: _Optional[str] = ...) -> None: ...
 
 class ListWorkspaces(_message.Message):
     __slots__ = ()
@@ -2500,7 +2502,7 @@ class ListWorkspaces(_message.Message):
     def __init__(self) -> None: ...
 
 class CreateWorkspace(_message.Message):
-    __slots__ = ("name", "description", "default_artifact_root")
+    __slots__ = ("name", "description", "default_artifact_root", "traces_destination")
     class Response(_message.Message):
         __slots__ = ("workspace",)
         WORKSPACE_FIELD_NUMBER: _ClassVar[int]
@@ -2509,10 +2511,12 @@ class CreateWorkspace(_message.Message):
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     DEFAULT_ARTIFACT_ROOT_FIELD_NUMBER: _ClassVar[int]
+    TRACES_DESTINATION_FIELD_NUMBER: _ClassVar[int]
     name: str
     description: str
     default_artifact_root: str
-    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., default_artifact_root: _Optional[str] = ...) -> None: ...
+    traces_destination: str
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., default_artifact_root: _Optional[str] = ..., traces_destination: _Optional[str] = ...) -> None: ...
 
 class GetWorkspace(_message.Message):
     __slots__ = ("workspace_name",)
@@ -2526,7 +2530,7 @@ class GetWorkspace(_message.Message):
     def __init__(self, workspace_name: _Optional[str] = ...) -> None: ...
 
 class UpdateWorkspace(_message.Message):
-    __slots__ = ("workspace_name", "description", "default_artifact_root")
+    __slots__ = ("workspace_name", "description", "default_artifact_root", "traces_destination")
     class Response(_message.Message):
         __slots__ = ("workspace",)
         WORKSPACE_FIELD_NUMBER: _ClassVar[int]
@@ -2535,10 +2539,12 @@ class UpdateWorkspace(_message.Message):
     WORKSPACE_NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     DEFAULT_ARTIFACT_ROOT_FIELD_NUMBER: _ClassVar[int]
+    TRACES_DESTINATION_FIELD_NUMBER: _ClassVar[int]
     workspace_name: str
     description: str
     default_artifact_root: str
-    def __init__(self, workspace_name: _Optional[str] = ..., description: _Optional[str] = ..., default_artifact_root: _Optional[str] = ...) -> None: ...
+    traces_destination: str
+    def __init__(self, workspace_name: _Optional[str] = ..., description: _Optional[str] = ..., default_artifact_root: _Optional[str] = ..., traces_destination: _Optional[str] = ...) -> None: ...
 
 class DeleteWorkspace(_message.Message):
     __slots__ = ("workspace_name",)

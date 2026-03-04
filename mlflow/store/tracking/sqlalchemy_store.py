@@ -6,12 +6,15 @@ import json
 import logging
 import math
 import random
+import re
+import tempfile
 import threading
 import time
 import uuid
 from collections import defaultdict
+from datetime import timedelta
 from functools import reduce
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from typing import Any, TypedDict, TypeVar
 from urllib.parse import urlparse
 
@@ -4456,6 +4459,7 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
                     start_time_unix_nano=span.start_time_ns,
                     end_time_unix_nano=span.end_time_ns,
                     content=content_json,
+                    content_size=len(content_json.encode("utf-8")),
                     dimension_attributes=dimension_attributes or None,
                 )
 
@@ -4754,9 +4758,13 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
     def _get_spans_with_trace_info(
         self, trace_info: TraceInfo, spans: list[SqlSpan], allow_partial: bool = True
     ) -> list[Span] | None:
+        spans_location = trace_info.tags.get(TraceTagKey.SPANS_LOCATION)
+        # If spans are archived to trace repository, load from there
+        if spans_location == SpansLocation.TRACES_REPO.value:
+            return self._load_spans_from_traces_repo(trace_info)
         # if the tag doesn't exist then the trace is not stored in the tracking store,
         # we should rely on the artifact repo to get the trace data
-        if trace_info.tags.get(TraceTagKey.SPANS_LOCATION) != SpansLocation.TRACKING_STORE.value:
+        if spans_location != SpansLocation.TRACKING_STORE.value:
             # This check is required so that the handler can capture the exception
             # and load data from artifact repo instead
             raise MlflowTracingException("Trace data not stored in tracking store")
@@ -4785,6 +4793,318 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
             Span.from_dict(translate_loaded_span(json.loads(sql_span.content)))
             for sql_span in sql_spans
         ]
+
+    def _load_spans_from_traces_repo(self, trace_info: TraceInfo) -> list[Span]:
+        """Load span data from the trace repository for archived traces."""
+        from opentelemetry.proto.trace.v1.trace_pb2 import TracesData
+
+        from mlflow.store.artifact.artifact_repository_registry import get_artifact_repository
+
+        artifact_location = trace_info.tags.get(MLFLOW_ARTIFACT_LOCATION)
+        if not artifact_location:
+            raise MlflowTracingException(
+                f"Trace {trace_info.trace_id} is archived but has no artifact location tag."
+            )
+
+        artifact_repo = get_artifact_repository(artifact_location)
+
+        max_pb_size = 500 * 1024 * 1024  # 500 MB safety limit
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            local_path = artifact_repo.download_artifacts("traces.pb", dst_path=tmp_dir)
+            file_size = Path(local_path).stat().st_size
+            if file_size > max_pb_size:
+                raise MlflowTracingException(
+                    f"Archived traces.pb for trace {trace_info.trace_id} is "
+                    f"{file_size} bytes, exceeding the {max_pb_size} byte limit."
+                )
+            traces_data = TracesData()
+            with open(local_path, "rb") as f:
+                traces_data.ParseFromString(f.read())
+
+        spans = [
+            Span.from_otel_proto(otel_span)
+            for resource_spans in traces_data.resource_spans
+            for scope_spans in resource_spans.scope_spans
+            for otel_span in scope_spans.spans
+        ]
+
+        return sorted(
+            spans,
+            key=lambda s: (0 if s.parent_id is None else 1, s.start_time_ns),
+        )
+
+    def archive_traces(
+        self,
+        experiment_id: str | None = None,
+        older_than: str | None = None,
+        max_db_size_mb: int | None = None,
+    ) -> int:
+        """Archive trace span data from the database to the trace repository.
+
+        Selects traces matching the retention policy, exports span content to protobuf
+        files in the trace repository, clears DB span content, and updates the spans
+        location tag to TRACES_REPO.
+
+        Returns the number of traces archived.
+        """
+        from mlflow.environment_variables import MLFLOW_TRACE_ARCHIVAL_LOCATION
+
+        trace_archival_location = MLFLOW_TRACE_ARCHIVAL_LOCATION.get()
+
+        # Parse older_than duration string to milliseconds
+        cutoff_ms = None
+        if older_than is not None:
+            regex = re.compile(
+                r"^((?P<days>\d+(?:\.\d+)?)d)?((?P<hours>\d+(?:\.\d+)?)h)"
+                r"?((?P<minutes>\d+(?:\.\d+)?)m)?((?P<seconds>\d+(?:\.\d+)?)s)?$"
+            )
+            parts = regex.match(older_than)
+            if parts is None:
+                raise MlflowException(
+                    f"Could not parse any time information from '{older_than}'. "
+                    "Examples of valid strings: '8h', '2d8h5m20s', '2m4s'",
+                    error_code=INVALID_PARAMETER_VALUE,
+                )
+            time_params = {name: float(param) for name, param in parts.groupdict().items() if param}
+            if not time_params:
+                raise MlflowException(
+                    f"Could not parse any time information from '{older_than}'. "
+                    "Examples of valid strings: '8h', '2d8h5m20s', '2m4s'",
+                    error_code=INVALID_PARAMETER_VALUE,
+                )
+            duration_ms = int(timedelta(**time_params).total_seconds() * 1000)
+            cutoff_ms = int(time.time() * 1000) - duration_ms
+
+        archived_count = 0
+        batch_size = 100
+
+        # If size-based policy, compute total size and determine how much to archive
+        if max_db_size_mb is not None:
+            max_db_size_bytes = max_db_size_mb * 1024 * 1024
+
+            # Compute candidates in a read-only session
+            with self.ManagedSessionMaker() as session:
+                total_size_query = session.query(func.sum(SqlSpan.content_size))
+                if experiment_id is not None:
+                    total_size_query = total_size_query.join(
+                        SqlTraceInfo, SqlTraceInfo.request_id == SqlSpan.trace_id
+                    ).filter(SqlTraceInfo.experiment_id == int(experiment_id))
+                total_size = total_size_query.scalar() or 0
+                if total_size <= max_db_size_bytes:
+                    return 0
+                excess_bytes = total_size - max_db_size_bytes
+                # Select oldest traces first until we've freed enough space
+                size_query = (
+                    session.query(
+                        SqlTraceInfo.request_id,
+                        func.sum(SqlSpan.content_size).label("trace_size"),
+                    )
+                    .join(SqlSpan, SqlSpan.trace_id == SqlTraceInfo.request_id)
+                    .outerjoin(
+                        SqlTraceTag,
+                        and_(
+                            SqlTraceTag.request_id == SqlTraceInfo.request_id,
+                            SqlTraceTag.key == TraceTagKey.SPANS_LOCATION,
+                        ),
+                    )
+                    .filter(
+                        or_(
+                            SqlTraceTag.value == SpansLocation.TRACKING_STORE.value,
+                            SqlTraceTag.value.is_(None),
+                        ),
+                        SqlSpan.content_size > 0,
+                    )
+                )
+                if experiment_id is not None:
+                    size_query = size_query.filter(
+                        SqlTraceInfo.experiment_id == int(experiment_id)
+                    )
+                size_query = size_query.group_by(SqlTraceInfo.request_id).order_by(
+                    SqlTraceInfo.timestamp_ms
+                )
+
+                candidate_trace_ids = []
+                accumulated = 0
+                for row in size_query:
+                    candidate_trace_ids.append(row.request_id)
+                    accumulated += row.trace_size
+                    if accumulated >= excess_bytes:
+                        break
+
+            if not candidate_trace_ids:
+                return 0
+
+            # Process in batches, each with its own session
+            for i in range(0, len(candidate_trace_ids), batch_size):
+                batch_ids = candidate_trace_ids[i : i + batch_size]
+                with self.ManagedSessionMaker() as session:
+                    batch_archived = self._archive_trace_batch(
+                        session, batch_ids, trace_archival_location
+                    )
+                archived_count += batch_archived
+                _logger.info(
+                    "Archived %d trace(s) so far (%d in this batch).",
+                    archived_count,
+                    batch_archived,
+                )
+        else:
+            # Time-based or experiment-based: query in batches
+            while True:
+                with self.ManagedSessionMaker() as session:
+                    # Query candidate trace IDs
+                    candidate_query = (
+                        self._trace_query(session)
+                        .with_entities(SqlTraceInfo.request_id)
+                        .outerjoin(
+                            SqlTraceTag,
+                            and_(
+                                SqlTraceTag.request_id == SqlTraceInfo.request_id,
+                                SqlTraceTag.key == TraceTagKey.SPANS_LOCATION,
+                            ),
+                        )
+                        .filter(
+                            or_(
+                                SqlTraceTag.value == SpansLocation.TRACKING_STORE.value,
+                                SqlTraceTag.value.is_(None),
+                            ),
+                        )
+                    )
+                    if experiment_id is not None:
+                        candidate_query = candidate_query.filter(
+                            SqlTraceInfo.experiment_id == int(experiment_id)
+                        )
+                    if cutoff_ms is not None:
+                        candidate_query = candidate_query.filter(
+                            SqlTraceInfo.timestamp_ms <= cutoff_ms
+                        )
+
+                    candidate_query = candidate_query.order_by(
+                        SqlTraceInfo.timestamp_ms
+                    ).limit(batch_size)
+
+                    batch_ids = [row.request_id for row in candidate_query.all()]
+                    if not batch_ids:
+                        break
+
+                    batch_archived = self._archive_trace_batch(
+                        session, batch_ids, trace_archival_location
+                    )
+                archived_count += batch_archived
+                _logger.info(
+                    "Archived %d trace(s) so far (%d in this batch).",
+                    archived_count,
+                    batch_archived,
+                )
+
+        _logger.info("Archival complete. Total traces archived: %d.", archived_count)
+        return archived_count
+
+    def _archive_trace_batch(
+        self,
+        session: Session,
+        trace_ids: list[str],
+        trace_archival_location: str | None,
+    ) -> int:
+        """Archive a batch of traces: export to protobuf, clear DB content, set tag."""
+        from opentelemetry.proto.trace.v1.trace_pb2 import (
+            ResourceSpans,
+            ScopeSpans,
+            TracesData,
+        )
+
+        from mlflow.store.artifact.artifact_repository_registry import get_artifact_repository
+
+        archived = 0
+        for trace_id in trace_ids:
+            try:
+                # Load trace info and spans
+                sql_trace_info = (
+                    self._trace_query(session)
+                    .options(joinedload(SqlTraceInfo.spans))
+                    .filter(SqlTraceInfo.request_id == trace_id)
+                    .one_or_none()
+                )
+                if sql_trace_info is None:
+                    continue
+
+                sql_spans = sql_trace_info.spans
+                if not sql_spans:
+                    continue
+
+                # Determine the trace repository root
+                artifact_location = next(
+                    (tag.value for tag in sql_trace_info.tags if tag.key == MLFLOW_ARTIFACT_LOCATION),
+                    None,
+                )
+
+                # Use trace_archival_location if set, otherwise fall back to existing artifact location
+                if trace_archival_location:
+                    repo_root = append_to_uri_path(
+                        trace_archival_location,
+                        str(sql_trace_info.experiment_id),
+                        SqlAlchemyStore.TRACE_FOLDER_NAME,
+                        trace_id,
+                        SqlAlchemyStore.ARTIFACTS_FOLDER_NAME,
+                    )
+                    # Update the artifact location tag to point to the trace repository
+                    session.merge(
+                        SqlTraceTag(
+                            request_id=trace_id,
+                            key=MLFLOW_ARTIFACT_LOCATION,
+                            value=repo_root,
+                        )
+                    )
+                elif artifact_location:
+                    repo_root = artifact_location
+                else:
+                    _logger.warning(
+                        "Trace %s has no artifact location and no trace archival "
+                        "location configured. Skipping.",
+                        trace_id,
+                    )
+                    continue
+
+                # Build TracesData protobuf from spans
+                otel_spans = []
+                for sql_span in sql_spans:
+                    if not sql_span.content:
+                        continue
+                    span = Span.from_dict(translate_loaded_span(json.loads(sql_span.content)))
+                    otel_spans.append(span.to_otel_proto())
+
+                if not otel_spans:
+                    continue
+
+                traces_data = TracesData(
+                    resource_spans=[ResourceSpans(scope_spans=[ScopeSpans(spans=otel_spans)])]
+                )
+
+                # Write protobuf to trace repository
+                artifact_repo = get_artifact_repository(repo_root)
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    pb_path = Path(tmp_dir) / "traces.pb"
+                    pb_path.write_bytes(traces_data.SerializeToString())
+                    artifact_repo.log_artifact(str(pb_path))
+
+                # Clear span content and set spans location tag
+                for sql_span in sql_spans:
+                    sql_span.content = ""
+                    sql_span.content_size = 0
+                session.merge(
+                    SqlTraceTag(
+                        request_id=trace_id,
+                        key=TraceTagKey.SPANS_LOCATION,
+                        value=SpansLocation.TRACES_REPO.value,
+                    )
+                )
+                session.flush()
+                archived += 1
+            except Exception:
+                _logger.warning(
+                    "Failed to archive trace %s. Skipping.", trace_id, exc_info=True
+                )
+
+        return archived
 
     #######################################################################################
     # Entity Association Methods

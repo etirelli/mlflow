@@ -94,6 +94,7 @@ class SqlAlchemyStore(AbstractStore):
                     name=workspace.name,
                     description=workspace.description,
                     default_artifact_root=workspace.default_artifact_root or None,
+                    traces_destination=workspace.traces_destination or None,
                 )
                 session.add(entity)
                 session.flush()
@@ -119,6 +120,8 @@ class SqlAlchemyStore(AbstractStore):
                 # If the default_artifact_root is an empty string, set it to None to "clear" the
                 # value
                 entity.default_artifact_root = workspace.default_artifact_root or None
+            if workspace.traces_destination is not None:
+                entity.traces_destination = workspace.traces_destination or None
             session.flush()
 
             _logger.info("Updated workspace '%s'", workspace.name)

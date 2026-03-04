@@ -1134,6 +1134,7 @@ def _create_workspace_handler():
             "name": [_assert_required, _assert_string],
             "description": [_assert_string],
             "default_artifact_root": [_assert_string],
+            "traces_destination": [_assert_string],
         },
     )
 
@@ -1148,6 +1149,11 @@ def _create_workspace_handler():
         if request_message.HasField("default_artifact_root")
         else None
     )
+    traces_destination = (
+        request_message.traces_destination
+        if request_message.HasField("traces_destination")
+        else None
+    )
     default_artifact_root = _validate_workspace_default_artifact_root(default_artifact_root)
     _ensure_artifact_root_available(default_artifact_root)
     store = _get_workspace_store()
@@ -1157,6 +1163,7 @@ def _create_workspace_handler():
                 name=request_message.name,
                 description=description,
                 default_artifact_root=default_artifact_root,
+                traces_destination=traces_destination,
             )
         )
     except NotImplementedError:
@@ -1190,17 +1197,22 @@ def _update_workspace_handler(workspace_name: str):
         schema={
             "description": [_assert_string],
             "default_artifact_root": [_assert_string],
+            "traces_destination": [_assert_string],
         },
     )
 
     has_description = request_message.HasField("description")
     has_artifact_root = request_message.HasField("default_artifact_root")
+    has_traces_destination = request_message.HasField("traces_destination")
 
-    if not has_description and not has_artifact_root:
+    if not has_description and not has_artifact_root and not has_traces_destination:
         raise MlflowException.invalid_parameter_value("Workspace update must have at least one key")
 
     description = request_message.description if has_description else None
     default_artifact_root = request_message.default_artifact_root if has_artifact_root else None
+    traces_destination = (
+        request_message.traces_destination if has_traces_destination else None
+    )
     default_artifact_root = _validate_workspace_default_artifact_root(default_artifact_root)
 
     # If the user is clearing the workspace artifact root (empty string), ensure the server
@@ -1215,6 +1227,7 @@ def _update_workspace_handler(workspace_name: str):
                 name=workspace_name,
                 description=description,
                 default_artifact_root=default_artifact_root,
+                traces_destination=traces_destination,
             )
         )
     except NotImplementedError:

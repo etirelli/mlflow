@@ -5170,6 +5170,9 @@ message Workspace {
 
   // Optional default artifact root override for this workspace.
   optional string default_artifact_root = 3;
+
+  // Optional traces destination override for this workspace.
+  optional string traces_destination = 4;
 }
 
 // List workspaces available to the current principal.
@@ -5194,6 +5197,9 @@ message CreateWorkspace {
 
   // Optional default artifact root override to apply at creation time.
   optional string default_artifact_root = 3;
+
+  // Optional traces destination override to apply at creation time.
+  optional string traces_destination = 4;
 
   message Response {
     // Metadata describing the created workspace.
@@ -5226,6 +5232,9 @@ message UpdateWorkspace {
 
   // Optional default artifact root override update.
   optional string default_artifact_root = 3;
+
+  // Optional traces destination override update.
+  optional string traces_destination = 4;
 
   message Response {
     // Metadata describing the updated workspace.

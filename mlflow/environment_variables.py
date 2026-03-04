@@ -1105,6 +1105,29 @@ _MLFLOW_DELETE_TRACES_MAX_BATCH_SIZE = _EnvironmentVariable(
     "MLFLOW_DELETE_TRACES_MAX_BATCH_SIZE", int, 100
 )
 
+#: Specifies the global trace repository URI for archiving trace span data from the database.
+#: (default: ``None``)
+MLFLOW_TRACE_ARCHIVAL_LOCATION = _EnvironmentVariable("MLFLOW_TRACE_ARCHIVAL_LOCATION", str, None)
+
+#: Specifies the span storage mode. When set to "database", spans are stored in the tracking
+#: database. Other modes may store spans externally.
+#: (default: ``"database"``)
+MLFLOW_TRACE_SPANS_STORAGE = _EnvironmentVariable("MLFLOW_TRACE_SPANS_STORAGE", str, "database")
+
+#: Specifies the default time-based retention for trace archival. Traces older than this
+#: duration will be archived.
+#: (default: ``None``)
+MLFLOW_TRACE_ARCHIVAL_OLDER_THAN = _EnvironmentVariable(
+    "MLFLOW_TRACE_ARCHIVAL_OLDER_THAN", str, None
+)
+
+#: Specifies the default size-based retention for trace archival. When the total span data
+#: in the database exceeds this size in megabytes, older traces will be archived.
+#: (default: ``None``)
+MLFLOW_TRACE_ARCHIVAL_MAX_DB_SIZE_MB = _EnvironmentVariable(
+    "MLFLOW_TRACE_ARCHIVAL_MAX_DB_SIZE_MB", int, None
+)
+
 #: Specifies the logging level for MLflow. This can be set to any valid logging level
 #: (e.g., "DEBUG", "INFO"). This environment must be set before importing mlflow to take
 #: effect. To modify the logging level after importing mlflow, use `importlib.reload(mlflow)`.

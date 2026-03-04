@@ -335,6 +335,18 @@ class AbstractStore(GatewayStoreMixin):
     ) -> int:
         raise NotImplementedError
 
+    def archive_traces(
+        self,
+        experiment_id: str | None = None,
+        older_than: str | None = None,
+        max_db_size_mb: int | None = None,
+    ) -> int:
+        """Archive trace span data from the database to the trace repository.
+
+        Returns the number of traces archived.
+        """
+        raise MlflowNotImplementedException()
+
     def get_trace_info(self, trace_id: str) -> TraceInfo:
         """
         Get the trace matching the `trace_id`.

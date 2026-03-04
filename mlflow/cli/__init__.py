@@ -506,6 +506,18 @@ def _validate_static_prefix(ctx, param, value):
     ),
 )
 @click.option(
+    "--trace-archival-location",
+    envvar="MLFLOW_TRACE_ARCHIVAL_LOCATION",
+    metavar="URI",
+    default=None,
+    help=(
+        "Destination URI for the trace repository (archived trace span data). "
+        "Supports the same backends as artifacts (S3, GCS, Azure, local filesystem). "
+        "Can be overridden per workspace via workspaces.traces_destination. "
+        "If not specified, defaults to --artifacts-destination."
+    ),
+)
+@click.option(
     "--enable-workspaces/--disable-workspaces",
     default=False,
     show_default=True,
@@ -537,6 +549,7 @@ def server(
     secrets_cache_ttl,
     secrets_cache_max_size,
     workspace_store_uri,
+    trace_archival_location,
     enable_workspaces,
 ):
     """
@@ -594,6 +607,10 @@ def server(
         enable_workspaces = MLFLOW_ENABLE_WORKSPACES.get()
 
     assert_server_workspace_env_unset()
+
+    # Sync trace archival location to environment so worker processes can access it
+    if trace_archival_location:
+        os.environ["MLFLOW_TRACE_ARCHIVAL_LOCATION"] = trace_archival_location
 
     # Keep environment flag in sync with the resolved boolean so server-side gating
     # (which reads MLFLOW_ENABLE_WORKSPACES.get()) has a single source of truth.

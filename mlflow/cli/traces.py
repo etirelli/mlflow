@@ -812,6 +812,161 @@ def delete_assessment(trace_id: str, assessment_id: str) -> None:
     click.echo(f"Deleted assessment {assessment_id} from trace {trace_id}.")
 
 
+@commands.command("archive")
+@click.option(
+    "--older-than",
+    type=click.STRING,
+    default=None,
+    envvar="MLFLOW_TRACE_ARCHIVAL_OLDER_THAN",
+    help="Archive traces older than this duration. "
+    "Specify a string in #d#h#m#s format. "
+    "For example: --older-than 90d, --older-than 24h, --older-than 7d12h",
+)
+@click.option(
+    "--max-db-size",
+    type=click.INT,
+    default=None,
+    envvar="MLFLOW_TRACE_ARCHIVAL_MAX_DB_SIZE_MB",
+    help="Maximum span data size in the database in megabytes. "
+    "Oldest traces will be archived until total size is below this limit.",
+)
+@click.option(
+    "--experiment-id",
+    "-x",
+    type=click.STRING,
+    default=None,
+    help="Only archive traces in this experiment.",
+)
+@click.option(
+    "--backend-store-uri",
+    metavar="PATH",
+    default=None,
+    help="URI of the backend store. Acceptable URIs are "
+    "SQLAlchemy-compatible database connection strings "
+    "(e.g. 'sqlite:///path/to/file.db'). By default, data will be read "
+    "from the ./mlruns directory.",
+)
+@click.option(
+    "--artifacts-destination",
+    envvar="MLFLOW_ARTIFACTS_DESTINATION",
+    metavar="URI",
+    default=None,
+    help="The base artifact location for resolving artifact URIs.",
+)
+@click.option(
+    "--workspace",
+    envvar="MLFLOW_WORKSPACE",
+    default=None,
+    help=(
+        "Target workspace for archival when workspaces are enabled. Defaults to the active "
+        "workspace (MLFLOW_WORKSPACE)."
+    ),
+)
+@click.option(
+    "--all-workspaces",
+    is_flag=True,
+    default=False,
+    help="Archive traces across all workspaces (workspace mode only).",
+)
+@click.pass_context
+def archive_traces(
+    ctx,
+    older_than: str | None = None,
+    max_db_size: int | None = None,
+    experiment_id: str | None = None,
+    backend_store_uri: str | None = None,
+    artifacts_destination: str | None = None,
+    workspace: str | None = None,
+    all_workspaces: bool = False,
+) -> None:
+    """
+    Archive trace span data from the database to the trace repository.
+
+    Archived traces retain metadata in the database for search but move
+    span content to the configured trace repository for cost savings.
+
+    Either --older-than or --max-db-size must be specified.
+
+    When workspaces are enabled, either --workspace or --all-workspaces
+    must be specified.
+
+    \b
+    Examples:
+    # Archive traces older than 90 days
+    mlflow traces archive --older-than 90d
+
+    \b
+    # Archive traces to keep DB under 10 GB
+    mlflow traces archive --max-db-size 10240
+
+    \b
+    # Archive old traces in a specific experiment
+    mlflow traces archive --older-than 30d --experiment-id 1
+
+    \b
+    # Archive traces in a specific workspace
+    mlflow traces archive --workspace my-workspace --older-than 90d
+
+    \b
+    # Archive across all workspaces
+    mlflow traces archive --all-workspaces --older-than 90d
+    """
+    from click.core import ParameterSource
+
+    from mlflow.environment_variables import MLFLOW_ENABLE_WORKSPACES
+    from mlflow.tracking import _get_store
+    from mlflow.utils.workspace_context import WorkspaceContext
+
+    if older_than is None and max_db_size is None:
+        raise click.UsageError("Either --older-than or --max-db-size must be specified.")
+
+    workspace_from_cli = ctx.get_parameter_source("workspace") == ParameterSource.COMMANDLINE
+    if workspace_from_cli and all_workspaces:
+        raise click.UsageError("Cannot use --workspace and --all-workspaces together.")
+    if all_workspaces:
+        workspace = None
+
+    if (workspace or all_workspaces) and not MLFLOW_ENABLE_WORKSPACES.get():
+        os.environ["MLFLOW_ENABLE_WORKSPACES"] = "true"
+
+    store = _get_store(backend_store_uri, artifacts_destination)
+
+    supports_workspaces = (
+        getattr(store, "supports_workspaces", False) and MLFLOW_ENABLE_WORKSPACES.get()
+    )
+    if supports_workspaces and not workspace and not all_workspaces:
+        raise click.UsageError(
+            "Workspaces are enabled. Specify --workspace <name> or --all-workspaces."
+        )
+
+    if all_workspaces and supports_workspaces:
+        from mlflow.tracking._workspace.registry import get_workspace_store
+        from mlflow.utils.workspace_utils import resolve_workspace_store_uri
+
+        workspace_store = get_workspace_store(
+            resolve_workspace_store_uri(tracking_uri=backend_store_uri)
+        )
+        workspace_names = [ws.name for ws in workspace_store.list_workspaces()]
+    elif workspace:
+        workspace_names = [workspace]
+    else:
+        workspace_names = [None]
+
+    total_count = 0
+    for ws_name in workspace_names:
+        with WorkspaceContext(ws_name):
+            count = store.archive_traces(
+                experiment_id=experiment_id,
+                older_than=older_than,
+                max_db_size_mb=max_db_size,
+            )
+            total_count += count
+            if ws_name is not None:
+                click.echo(f"Archived {count} trace(s) in workspace '{ws_name}'.")
+
+    click.echo(f"Archived {total_count} trace(s) total.")
+
+
 @commands.command("evaluate")
 @mlflow_mcp(tool_name="evaluate_traces")
 @EXPERIMENT_ID

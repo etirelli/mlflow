@@ -18,6 +18,7 @@ class SqlWorkspace(Base):
     name = Column(String(63), nullable=False)
     description = Column(Text, nullable=True)
     default_artifact_root = Column(Text, nullable=True)
+    traces_destination = Column(Text, nullable=True)
 
     __table_args__ = (sa.PrimaryKeyConstraint("name", name="workspaces_pk"),)
 
@@ -29,4 +30,5 @@ class SqlWorkspace(Base):
             name=self.name,
             description=self.description,
             default_artifact_root=self.default_artifact_root,
+            traces_destination=self.traces_destination,
         )
