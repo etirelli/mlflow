@@ -30,8 +30,6 @@ from mlflow.protos.databricks_pb2 import (
 from mlflow.tracing.otel.otel_archival import (
     TRACE_ARCHIVAL_ARTIFACT_PATH,
     TRACE_ARCHIVAL_FILENAME,
-    spans_to_traces_data_pb,
-    traces_data_pb_to_spans,
 )
 from mlflow.tracing.utils.artifact_utils import TRACE_DATA_FILE_NAME
 from mlflow.utils.annotations import developer_stable
@@ -424,6 +422,8 @@ class ArtifactRepository:
         Args:
             spans: List of MLflow Span entities (must belong to the same trace).
         """
+        from mlflow.tracing.otel.otel_archival import spans_to_traces_data_pb
+
         data = spans_to_traces_data_pb(spans)
         with write_local_temp_trace_data_pb_file(data) as temp_file:
             self.log_artifact(temp_file, artifact_path=TRACE_ARCHIVAL_ARTIFACT_PATH)
@@ -483,6 +483,8 @@ def try_read_trace_data(trace_data_path):
 
 def try_read_trace_data_pb(trace_data_path):
     """Read trace protobuf from a local file and return a list of Span entities."""
+    from mlflow.tracing.otel.otel_archival import traces_data_pb_to_spans
+
     if not os.path.exists(trace_data_path):
         raise MlflowTraceDataNotFound(artifact_path=trace_data_path)
     data = Path(trace_data_path).read_bytes()

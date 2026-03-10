@@ -471,7 +471,7 @@ class WorkspaceAwareSqlAlchemyStore(WorkspaceAwareMixin, SqlAlchemyStore):
 
         return append_to_uri_path(resolved_root, str(experiment_id))
 
-    def _get_trace_repository_root(self, session, workspace_name: str) -> str:
+    def _get_trace_repository_root(self, workspace_name: str) -> str:
         """
         Resolve the trace repository root for the workspace.
 

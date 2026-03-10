@@ -29,6 +29,14 @@ def upgrade():
             server_default=sa.text("0"),
         ),
     )
+    # Backfill content_size for existing spans so size-based archival policies
+    # see accurate totals from the start.
+    op.execute(
+        sa.text(
+            f"UPDATE {_SPANS_TABLE} SET content_size = LENGTH(content)"
+            f" WHERE content IS NOT NULL AND content != ''"
+        )
+    )
 
 
 def downgrade():

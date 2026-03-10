@@ -3107,7 +3107,7 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
         )
         return SqlTraceTag(request_id=trace_id, key=MLFLOW_ARTIFACT_LOCATION, value=artifact_uri)
 
-    def _get_trace_repository_root(self, session, workspace_name: str) -> str:
+    def _get_trace_repository_root(self, workspace_name: str) -> str:
         """
         Resolve the trace repository root.
 
@@ -3144,10 +3144,10 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
                 if (sql_exp is not None and sql_exp.workspace is not None)
                 else DEFAULT_WORKSPACE_NAME
             )
-            root = self._get_trace_repository_root(session, workspace_name)
-            return self._get_trace_artifact_uri(
-                root, str(trace_info.experiment_id), trace_info.trace_id
-            )
+        root = self._get_trace_repository_root(workspace_name)
+        return self._get_trace_artifact_uri(
+            root, str(trace_info.experiment_id), trace_info.trace_id
+        )
 
     def start_trace(self, trace_info: "TraceInfo") -> TraceInfo:
         """
@@ -3874,7 +3874,7 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
                     if (sql_exp is not None and sql_exp.workspace is not None)
                     else DEFAULT_WORKSPACE_NAME
                 )
-                root = self._get_trace_repository_root(session, workspace_name)
+                root = self._get_trace_repository_root(workspace_name)
                 from mlflow.tracing.otel.otel_archival import TRACE_ARCHIVAL_ARTIFACT_PATH
 
                 for trace_id in trace_ids_traces_repo:
@@ -3898,6 +3898,8 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
                 .delete(synchronize_session="fetch")
             )
 
+    _ARCHIVE_BATCH_SIZE = 50
+
     def _archive_traces(
         self,
         workspace: str | None = None,
@@ -3913,26 +3915,76 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
         Selects traces in TRACKING_STORE (or with no SpansLocation tag) older than the cutoff,
         writes span data to the trace repo, updates tags, and clears span content/content_size.
         When trace_id is set, archives only that trace; when experiment_id is set, limits
-        to that experiment.
+        to that experiment.  Traces are processed in batches of ``_ARCHIVE_BATCH_SIZE``.
         """
-        from mlflow.store.artifact.artifact_repo import (
+        from mlflow.tracing.otel.otel_archival import (
             TRACE_ARCHIVAL_ARTIFACT_PATH,
-            write_local_temp_trace_data_pb_file,
+            spans_to_traces_data_pb,
         )
-        from mlflow.tracing.otel.otel_archival import spans_to_traces_data_pb
 
         cutoff_ms = (
             get_current_time_millis() - int(older_than_days * 24 * 3600 * 1000)
             if older_than_days is not None
             else None
         )
+
+        # --- Phase 1: build the candidate list inside a short-lived session ---
+        candidate_rows = self._collect_archive_candidates(
+            workspace=workspace,
+            experiment_id=experiment_id,
+            trace_id=trace_id,
+            cutoff_ms=cutoff_ms,
+            max_db_size_mb=max_db_size_mb,
+        )
+        if not candidate_rows:
+            return 0
+
+        # --- Phase 2: process candidates in batches, outside the query session ---
         archived_count = 0
+        total = len(candidate_rows)
+        for batch_start in range(0, total, self._ARCHIVE_BATCH_SIZE):
+            batch = candidate_rows[batch_start : batch_start + self._ARCHIVE_BATCH_SIZE]
+            for tid, exp_id in batch:
+                if exp_id is None:
+                    continue
+                try:
+                    archived = self._archive_single_trace(
+                        tid, exp_id, TRACE_ARCHIVAL_ARTIFACT_PATH, spans_to_traces_data_pb
+                    )
+                    if archived:
+                        archived_count += 1
+                except Exception as e:
+                    _logger.warning(
+                        "Failed to archive trace %s: %s. Skipping.",
+                        tid,
+                        e,
+                    )
+                    continue
+            _logger.info(
+                "Archive progress: %d / %d candidates processed (%d archived so far).",
+                min(batch_start + len(batch), total),
+                total,
+                archived_count,
+            )
+
+        return archived_count
+
+    def _collect_archive_candidates(
+        self,
+        workspace: str | None,
+        experiment_id: str | None,
+        trace_id: str | None,
+        cutoff_ms: int | None,
+        max_db_size_mb: float | None,
+    ) -> list[tuple[str, int]]:
+        """
+        Query for archival candidates and return a materialized list of
+        ``(trace_id, experiment_id)`` tuples.  The session is released before returning.
+        """
+        filter_by_trace_id = trace_id is not None
 
         with self.ManagedSessionMaker() as session:
-            # Resolve experiment IDs (optionally by workspace, experiment_id, or from trace)
-            filter_by_trace_id = trace_id is not None
             if filter_by_trace_id and experiment_id is None and workspace is None:
-                # Resolve experiment_ids from the trace so we know where it lives
                 row = (
                     session.query(SqlTraceInfo.experiment_id)
                     .filter(SqlTraceInfo.request_id == trace_id)
@@ -3948,13 +4000,12 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
                         exp_id_int = int(experiment_id)
                         exp_query = exp_query.filter(SqlExperiment.experiment_id == exp_id_int)
                     except (TypeError, ValueError):
-                        return 0
+                        return []
                 experiment_ids = [row[0] for row in exp_query.all()]
 
             if not experiment_ids:
-                return 0
+                return []
 
-            # Candidates: TRACKING_STORE or no SpansLocation tag, in scope; optional time cutoff
             spans_location_tag = (
                 session.query(SqlTraceTag.request_id)
                 .filter(
@@ -3984,7 +4035,6 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
             )
 
             if not filter_by_trace_id and max_db_size_mb is not None and max_db_size_mb > 0:
-                # Size-based cap: archive oldest until DB span content is under max_db_size_mb
                 total_size_bytes = (
                     session.query(func.coalesce(func.sum(SqlSpan.content_size), 0))
                     .filter(SqlSpan.trace_id.in_(candidate_trace_subq))
@@ -3993,7 +4043,7 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
                 )
                 total_size_mb = total_size_bytes / (1024 * 1024)
                 if total_size_mb <= max_db_size_mb:
-                    return 0
+                    return []
                 target_reduce_mb = total_size_mb - max_db_size_mb
                 trace_sizes = (
                     session.query(
@@ -4005,91 +4055,104 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
                 )
                 size_by_trace = {row[0]: (row[1] or 0) / (1024 * 1024) for row in trace_sizes.all()}
                 cumulative_mb = 0.0
-                trace_ids_to_archive = []
+                result: list[tuple[str, int]] = []
                 for candidate_tid, exp_id in candidate_query.all():
                     if cumulative_mb >= target_reduce_mb:
                         break
-                    trace_ids_to_archive.append((candidate_tid, exp_id))
+                    result.append((candidate_tid, exp_id))
                     cumulative_mb += size_by_trace.get(candidate_tid, 0)
-                candidate_rows = trace_ids_to_archive
-            else:
-                candidate_rows = candidate_query.all()
+                return result
 
-            for tid, exp_id in candidate_rows:
-                if exp_id is None:
-                    continue
-                try:
-                    with self.ManagedSessionMaker() as inner_session:
-                        sql_trace_info = (
-                            self._trace_query(inner_session)
-                            .filter(SqlTraceInfo.request_id == tid)
-                            .one_or_none()
-                        )
-                        if sql_trace_info is None:
-                            continue
-                        sql_exp = (
-                            inner_session.query(SqlExperiment)
-                            .filter(SqlExperiment.experiment_id == exp_id)
-                            .first()
-                        )
-                        workspace_name = (
-                            sql_exp.workspace
-                            if (sql_exp is not None and sql_exp.workspace is not None)
-                            else DEFAULT_WORKSPACE_NAME
-                        )
-                        root = self._get_trace_repository_root(inner_session, workspace_name)
-                        trace_artifact_uri = self._get_trace_artifact_uri(root, str(exp_id), tid)
-                        sql_spans = (
-                            inner_session.query(SqlSpan)
-                            .filter(SqlSpan.trace_id == tid)
-                            .order_by(SqlSpan.start_time_unix_nano)
-                            .all()
-                        )
-                        if not sql_spans:
-                            continue
-                        spans = [
-                            Span.from_dict(translate_loaded_span(json.loads(s.content)))
-                            for s in sql_spans
-                        ]
-                    # Write traces.pb outside the session to avoid long-held connections
-                    data = spans_to_traces_data_pb(spans)
-                    artifact_repo = get_artifact_repository(trace_artifact_uri)
-                    with write_local_temp_trace_data_pb_file(data) as temp_file:
-                        artifact_repo.log_artifact(
-                            str(temp_file),
-                            artifact_path=TRACE_ARCHIVAL_ARTIFACT_PATH,
-                        )
-                    # Update tags and clear span content in a new session
-                    with self.ManagedSessionMaker() as update_session:
-                        update_session.merge(
-                            SqlTraceTag(
-                                request_id=tid,
-                                key=MLFLOW_ARTIFACT_LOCATION,
-                                value=trace_artifact_uri,
-                            )
-                        )
-                        update_session.merge(
-                            SqlTraceTag(
-                                request_id=tid,
-                                key=TraceTagKey.SPANS_LOCATION,
-                                value=SpansLocation.TRACES_REPO.value,
-                            )
-                        )
-                        update_session.query(SqlSpan).filter(SqlSpan.trace_id == tid).update(
-                            {SqlSpan.content: "", SqlSpan.content_size: 0},
-                            synchronize_session="fetch",
-                        )
-                        update_session.commit()
-                    archived_count += 1
-                except Exception as e:
-                    _logger.warning(
-                        "Failed to archive trace %s: %s. Skipping.",
-                        tid,
-                        e,
-                    )
-                    continue
+            return list(candidate_query.all())
 
-        return archived_count
+    def _archive_single_trace(
+        self,
+        tid: str,
+        exp_id: int,
+        artifact_path: str,
+        spans_to_pb,
+    ) -> bool:
+        """
+        Archive a single trace: read spans, write traces.pb, update tags, clear content.
+
+        Returns True if the trace was archived, False if skipped.
+        Uses an optimistic concurrency guard: re-checks that the trace is still in
+        TRACKING_STORE before reading, so concurrent archival processes don't duplicate work.
+        """
+        from mlflow.store.artifact.artifact_repo import write_local_temp_trace_data_pb_file
+
+        # Read span data in a short-lived session
+        with self.ManagedSessionMaker() as read_session:
+            # Concurrency guard: verify trace is still in TRACKING_STORE
+            current_location = (
+                read_session.query(SqlTraceTag.value)
+                .filter(
+                    SqlTraceTag.request_id == tid,
+                    SqlTraceTag.key == TraceTagKey.SPANS_LOCATION,
+                )
+                .scalar()
+            )
+            if current_location and current_location != SpansLocation.TRACKING_STORE.value:
+                return False
+
+            sql_trace_info = (
+                self._trace_query(read_session).filter(SqlTraceInfo.request_id == tid).one_or_none()
+            )
+            if sql_trace_info is None:
+                return False
+            sql_exp = (
+                read_session.query(SqlExperiment)
+                .filter(SqlExperiment.experiment_id == exp_id)
+                .first()
+            )
+            workspace_name = (
+                sql_exp.workspace
+                if (sql_exp is not None and sql_exp.workspace is not None)
+                else DEFAULT_WORKSPACE_NAME
+            )
+            root = self._get_trace_repository_root(workspace_name)
+            trace_artifact_uri = self._get_trace_artifact_uri(root, str(exp_id), tid)
+            sql_spans = (
+                read_session.query(SqlSpan)
+                .filter(SqlSpan.trace_id == tid)
+                .order_by(SqlSpan.start_time_unix_nano)
+                .all()
+            )
+            if not sql_spans:
+                return False
+            spans = [
+                Span.from_dict(translate_loaded_span(json.loads(s.content))) for s in sql_spans
+            ]
+
+        # Write traces.pb outside any DB session
+        data = spans_to_pb(spans)
+        artifact_repo = get_artifact_repository(trace_artifact_uri)
+        with write_local_temp_trace_data_pb_file(data) as temp_file:
+            artifact_repo.log_artifact(str(temp_file), artifact_path=artifact_path)
+
+        # Update tags and clear span content in a new session
+        with self.ManagedSessionMaker() as update_session:
+            update_session.merge(
+                SqlTraceTag(
+                    request_id=tid,
+                    key=MLFLOW_ARTIFACT_LOCATION,
+                    value=trace_artifact_uri,
+                )
+            )
+            update_session.merge(
+                SqlTraceTag(
+                    request_id=tid,
+                    key=TraceTagKey.SPANS_LOCATION,
+                    value=SpansLocation.TRACES_REPO.value,
+                )
+            )
+            update_session.query(SqlSpan).filter(SqlSpan.trace_id == tid).update(
+                {SqlSpan.content: "", SqlSpan.content_size: 0},
+                synchronize_session="fetch",
+            )
+            update_session.commit()
+
+        return True
 
     def create_assessment(self, assessment: Assessment) -> Assessment:
         """
@@ -5059,7 +5122,7 @@ class SqlAlchemyStore(SqlAlchemyGatewayStoreMixin, AbstractStore):
                     if (sql_exp is not None and sql_exp.workspace is not None)
                     else DEFAULT_WORKSPACE_NAME
                 )
-                trace_repo_root = self._get_trace_repository_root(session, workspace_name)
+            trace_repo_root = self._get_trace_repository_root(workspace_name)
             trace_artifact_uri = self._get_trace_artifact_uri(
                 trace_repo_root, str(trace_info.experiment_id), trace_info.trace_id
             )

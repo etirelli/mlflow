@@ -479,19 +479,21 @@ def delete_traces(
 def _parse_older_than_to_days(older_than: str) -> float:
     """Parse a duration string (e.g. 90d, 24h, 1d2h) to days."""
     regex = re.compile(
-        r"^((?P<days>[\.\d]+?)d)?((?P<hours>[\.\d]+?)h)?((?P<minutes>[\.\d]+?)m)?"
-        r"((?P<seconds>[\.\d]+?)s)?$"
+        r"^((?P<days>\d+(?:\.\d+)?)d)?((?P<hours>\d+(?:\.\d+)?)h)?"
+        r"((?P<minutes>\d+(?:\.\d+)?)m)?((?P<seconds>\d+(?:\.\d+)?)s)?$"
+    )
+    err_msg = (
+        f"Could not parse time from '{older_than}'. Use format like 90d, 24h, 1d2h30m, or 2.5d."
     )
     parts = regex.match(older_than.strip())
     if parts is None:
-        raise click.UsageError(
-            f"Could not parse time from '{older_than}'. Use format like 90d, 24h, 1d2h30m, or 2.5d."
-        )
-    time_params = {name: float(param) for name, param in parts.groupdict().items() if param}
+        raise click.UsageError(err_msg)
+    try:
+        time_params = {name: float(param) for name, param in parts.groupdict().items() if param}
+    except ValueError:
+        raise click.UsageError(err_msg)
     if not time_params:
-        raise click.UsageError(
-            f"Could not parse time from '{older_than}'. Use format like 90d, 24h, 1d2h30m, or 2.5d."
-        )
+        raise click.UsageError(err_msg)
     delta = timedelta(**time_params)
     return delta.total_seconds() / (24 * 3600)
 
@@ -499,12 +501,14 @@ def _parse_older_than_to_days(older_than: str) -> float:
 def _parse_size_to_mb(size_str: str) -> float:
     """Parse a size string (e.g. 10GB, 100MB, 500) to MB. Bare number is treated as MB."""
     size_str = size_str.strip()
-    match = re.match(r"^(?P<value>[\.\d]+)\s*(?P<unit>GB|MB|KB)?$", size_str, re.IGNORECASE)
+    err_msg = f"Could not parse size from '{size_str}'. Use format like 10GB, 100MB, or 500."
+    match = re.match(r"^(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>GB|MB|KB)?$", size_str, re.IGNORECASE)
     if not match:
-        raise click.UsageError(
-            f"Could not parse size from '{size_str}'. Use format like 10GB, 100MB, or 500."
-        )
-    value = float(match.group("value"))
+        raise click.UsageError(err_msg)
+    try:
+        value = float(match.group("value"))
+    except ValueError:
+        raise click.UsageError(err_msg)
     unit = (match.group("unit") or "MB").upper()
     if unit == "KB":
         return value / 1024
