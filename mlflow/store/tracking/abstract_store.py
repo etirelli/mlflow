@@ -1,6 +1,7 @@
 import bisect
 import json
 from abc import ABCMeta, abstractmethod
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from mlflow.entities import (
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
         OnlineScorer,
         OnlineScoringConfig,
     )
+    from mlflow.tracing.trace_repo import TraceArchiveData
 from mlflow.entities.metric import MetricWithRunId
 from mlflow.entities.trace import Span, Trace
 from mlflow.entities.trace_info import TraceInfo
@@ -338,6 +340,132 @@ class AbstractStore(GatewayStoreMixin):
     ) -> int:
         raise NotImplementedError
 
+    def archive_traces(
+        self,
+        workspace: str | None = None,
+        older_than: timedelta | None = None,
+        trace_ids: list[str] | None = None,
+        experiment_id: str | None = None,
+        filter_string: str | None = None,
+    ) -> int:
+        """
+        Archive traces from the tracking store to the archive repository.
+
+        Moves span content from the database to the configured trace archival location
+        (traces.pb) and clears span content in the DB.
+
+        Args:
+            workspace: Optional workspace name to scope archival to.
+            older_than: Optional duration; only archive traces older than this.
+            trace_ids: Optional list of trace IDs to archive (then older_than is not required).
+            experiment_id: Optional experiment ID to limit archival to traces in that experiment.
+            filter_string: Optional MLflow search filter to restrict which traces are archived
+                (same syntax as search_traces).
+
+        Returns:
+            The number of traces archived.
+        """
+        has_trace_ids = trace_ids is not None and len(trace_ids) > 0
+        if not has_trace_ids and older_than is None:
+            raise MlflowException.invalid_parameter_value(
+                "Specify at least one of older_than or trace_ids."
+            )
+        if older_than is not None and older_than.total_seconds() <= 0:
+            raise MlflowException.invalid_parameter_value(
+                f"older_than must be positive, got {older_than}."
+            )
+        return self._archive_traces(
+            workspace=workspace,
+            older_than=older_than,
+            trace_ids=trace_ids,
+            experiment_id=experiment_id,
+            filter_string=filter_string,
+        )
+
+    def _archive_traces(
+        self,
+        workspace: str | None = None,
+        older_than: timedelta | None = None,
+        trace_ids: list[str] | None = None,
+        experiment_id: str | None = None,
+        filter_string: str | None = None,
+    ) -> int:
+        raise NotImplementedError(f"{self.__class__.__name__} does not support archive_traces.")
+
+    # ------------------------------------------------------------------
+    # Archival primitives (used by the trace_repo orchestrator)
+    # ------------------------------------------------------------------
+
+    def collect_archive_candidates(
+        self,
+        workspace: str | None,
+        experiment_id: str | None,
+        trace_ids: list[str] | None,
+        cutoff_ms: int | None,
+        filter_string: str | None = None,
+    ) -> list[tuple[str, int]]:
+        """Return ``(trace_id, experiment_id)`` tuples eligible for archival.
+
+        Pure DB query -- no artifact I/O.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support collect_archive_candidates."
+        )
+
+    def read_trace_for_archive(
+        self, trace_id: str, experiment_id: int
+    ) -> "TraceArchiveData | None":
+        """Read spans and metadata needed to write a trace archive.
+
+        Includes a concurrency guard: returns ``None`` if the trace has
+        already been archived by another process.
+
+        Returns:
+            A ``TraceArchiveData`` instance, or ``None`` if the trace should
+            be skipped.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support read_trace_for_archive."
+        )
+
+    def mark_trace_archived(self, trace_id: str, artifact_uri: str) -> None:
+        """Update DB tags to record that a trace has been archived and clear span content."""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support mark_trace_archived."
+        )
+
+    def find_archived_trace_uris(
+        self,
+        experiment_id: str,
+        max_timestamp_millis: int | None = None,
+        max_traces: int | None = None,
+        trace_ids: list[str] | None = None,
+    ) -> dict[str, str]:
+        """Return ``{trace_id: artifact_uri}`` for archived traces matching the delete criteria.
+
+        Used by the orchestrator to clean up artifacts before deleting DB rows.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support find_archived_trace_uris."
+        )
+
+    def delete_trace_rows(
+        self,
+        experiment_id: str,
+        max_timestamp_millis: int | None = None,
+        max_traces: int | None = None,
+        trace_ids: list[str] | None = None,
+    ) -> int:
+        """Delete trace DB rows only (no artifact cleanup)."""
+        raise NotImplementedError(f"{self.__class__.__name__} does not support delete_trace_rows.")
+
+    def get_trace_repository_artifact_uri(self, trace_info: "TraceInfo") -> str | None:
+        """
+        Return the artifact URI for loading trace data from the archive repository, or None
+        if the store does not support trace archival or the trace is not archived.
+        """
+        return None
+
     def get_trace_info(self, trace_id: str) -> TraceInfo:
         """
         Get the trace matching the `trace_id`.
@@ -422,6 +550,12 @@ class AbstractStore(GatewayStoreMixin):
     ) -> tuple[list[TraceInfo], str | None]:
         """
         Return traces that match the given list of search expressions within the experiments.
+
+        Trace-level and column-based span filters apply to all traces (including archived ones,
+        whose metadata and span columns remain in the DB). JSON-based span filters
+        (e.g. ``span.attributes.*`` or filters that inspect ``spans.content``) do not match
+        archived traces, because span content is cleared after archival; only trace metadata
+        and non-content span columns are retained.
 
         Args:
             experiment_ids: List of experiment ids to scope the search.

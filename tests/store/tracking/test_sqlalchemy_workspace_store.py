@@ -2237,3 +2237,78 @@ def test_search_issues_is_workspace_scoped(workspace_tracking_store):
         results = workspace_tracking_store.search_issues(filter_string="status = 'pending'")
         assert len(results) == 1
         assert results[0].issue_id == issue_b.issue_id
+
+
+def test_collect_archive_candidates_global_mode(workspace_tracking_store):
+    with WorkspaceContext("team-a"):
+        exp_id = workspace_tracking_store.create_experiment("archive-global")
+        trace_info = _create_trace(
+            workspace_tracking_store,
+            "tr-global-1",
+            exp_id,
+            request_time=0,
+        )
+        span = create_test_span(trace_id=trace_info.trace_id, name="global_span")
+        workspace_tracking_store.log_spans(exp_id, [span])
+
+    cutoff_ms = int((time.time() - 1 * 86400) * 1000)
+    candidates = workspace_tracking_store.collect_archive_candidates(
+        workspace=None, experiment_id=None, trace_ids=None, cutoff_ms=cutoff_ms
+    )
+    assert len(candidates) == 1
+    assert candidates[0][0] == trace_info.trace_id
+
+
+def test_collect_archive_candidates_workspace_scoped(workspace_tracking_store):
+    with WorkspaceContext("team-a"):
+        exp_id = workspace_tracking_store.create_experiment("archive-exp")
+        trace_info = _create_trace(
+            workspace_tracking_store,
+            "tr-archive-1",
+            exp_id,
+            request_time=int(time.time() * 1000),
+        )
+        span = create_test_span(trace_id=trace_info.trace_id, name="scoped_span")
+        workspace_tracking_store.log_spans(exp_id, [span])
+
+    cutoff_ms = int((time.time() - 365 * 86400) * 1000)
+    candidates = workspace_tracking_store.collect_archive_candidates(
+        workspace="team-a", experiment_id=None, trace_ids=None, cutoff_ms=cutoff_ms
+    )
+    assert len(candidates) == 0
+
+
+def test_mark_trace_archived_workspace(workspace_tracking_store):
+    from mlflow.store.tracking.dbmodels.models import SqlSpan, SqlTraceTag
+    from mlflow.tracing.constant import SpansLocation, TraceTagKey
+
+    with WorkspaceContext("team-a"):
+        exp_id = workspace_tracking_store.create_experiment("archive-ws-hp")
+        trace_info = _create_trace(
+            workspace_tracking_store,
+            "tr-ws-archive",
+            exp_id,
+            request_time=0,
+        )
+        span = create_test_span(trace_id=trace_info.trace_id, name="ws_span")
+        workspace_tracking_store.log_spans(exp_id, [span])
+
+    artifact_uri = "file:///tmp/test/ws-traces"
+    workspace_tracking_store.mark_trace_archived(trace_info.trace_id, artifact_uri)
+
+    with workspace_tracking_store.ManagedSessionMaker() as session:
+        sql_span = session.query(SqlSpan).filter(SqlSpan.trace_id == trace_info.trace_id).first()
+        assert sql_span is not None
+        assert sql_span.content == ""
+
+        location_tag = (
+            session
+            .query(SqlTraceTag)
+            .filter(
+                SqlTraceTag.request_id == trace_info.trace_id,
+                SqlTraceTag.key == TraceTagKey.SPANS_LOCATION,
+            )
+            .first()
+        )
+        assert location_tag is not None
+        assert location_tag.value == SpansLocation.ARCHIVE_REPO.value

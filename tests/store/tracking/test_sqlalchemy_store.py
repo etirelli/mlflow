@@ -8025,6 +8025,98 @@ def test_delete_traces_raises_error(store):
         store.delete_traces(exp_id, 100, max_traces=0)
 
 
+def test_archive_traces_requires_older_than_or_trace_id(store: SqlAlchemyStore):
+    with pytest.raises(
+        MlflowException,
+        match=r"Specify at least one of older_than or trace_ids",
+    ):
+        store.archive_traces(older_than=None)
+
+
+def _create_trace_with_spans(store, trace_id, experiment_id, request_time):
+    """Helper: create a trace and log spans for it, returning (trace_info, span)."""
+    trace_info = _create_trace(store, trace_id, experiment_id, request_time=request_time)
+    span = create_test_span(trace_id=trace_info.trace_id, name="test_span")
+    store.log_spans(experiment_id, [span])
+    return trace_info, span
+
+
+def test_collect_archive_candidates_returns_empty_for_recent_traces(
+    store: SqlAlchemyStore, workspaces_enabled: bool
+):
+    exp_id = store.create_experiment("test")
+    _create_trace(store, "tr-1", exp_id, request_time=int(time.time() * 1000))
+    cutoff_ms = int((time.time() - 365 * 86400) * 1000)
+    candidates = store.collect_archive_candidates(
+        workspace=None, experiment_id=None, trace_ids=None, cutoff_ms=cutoff_ms
+    )
+    assert len(candidates) == 0
+
+
+def test_collect_archive_candidates_finds_old_traces(
+    store: SqlAlchemyStore, workspaces_enabled: bool
+):
+    exp_id = store.create_experiment("archive-test")
+    trace_info, _ = _create_trace_with_spans(store, "tr-old", exp_id, request_time=0)
+    cutoff_ms = int((time.time() - 1 * 86400) * 1000)
+    candidates = store.collect_archive_candidates(
+        workspace=None, experiment_id=None, trace_ids=None, cutoff_ms=cutoff_ms
+    )
+    assert len(candidates) == 1
+    assert candidates[0][0] == trace_info.trace_id
+
+
+def test_collect_archive_candidates_by_trace_id(store: SqlAlchemyStore):
+    exp_id = store.create_experiment("archive-by-id")
+    trace_info, _ = _create_trace_with_spans(store, "tr-by-id", exp_id, request_time=0)
+    candidates = store.collect_archive_candidates(
+        workspace=None, experiment_id=None, trace_ids=[trace_info.trace_id], cutoff_ms=None
+    )
+    assert len(candidates) == 1
+    assert candidates[0][0] == trace_info.trace_id
+
+
+def test_collect_archive_candidates_excludes_already_archived(store: SqlAlchemyStore):
+    exp_id = store.create_experiment("archive-excl")
+    trace_info, _ = _create_trace_with_spans(store, "tr-already", exp_id, request_time=0)
+    store.mark_trace_archived(trace_info.trace_id, "file:///dummy/uri")
+    cutoff_ms = int(time.time() * 1000)
+    candidates = store.collect_archive_candidates(
+        workspace=None, experiment_id=None, trace_ids=None, cutoff_ms=cutoff_ms
+    )
+    assert len(candidates) == 0
+
+
+def test_mark_trace_archived_clears_content_and_sets_tags(store: SqlAlchemyStore):
+    exp_id = store.create_experiment("archive-mark")
+    trace_info, _ = _create_trace_with_spans(store, "tr-mark", exp_id, request_time=0)
+
+    with store.ManagedSessionMaker() as session:
+        sql_span = session.query(SqlSpan).filter(SqlSpan.trace_id == trace_info.trace_id).first()
+        assert sql_span is not None
+        assert sql_span.content != ""
+
+    artifact_uri = "file:///tmp/test/traces"
+    store.mark_trace_archived(trace_info.trace_id, artifact_uri)
+
+    with store.ManagedSessionMaker() as session:
+        sql_span = session.query(SqlSpan).filter(SqlSpan.trace_id == trace_info.trace_id).first()
+        assert sql_span is not None
+        assert sql_span.content == ""
+
+        location_tag = (
+            session
+            .query(SqlTraceTag)
+            .filter(
+                SqlTraceTag.request_id == trace_info.trace_id,
+                SqlTraceTag.key == TraceTagKey.SPANS_LOCATION,
+            )
+            .first()
+        )
+        assert location_tag is not None
+        assert location_tag.value == SpansLocation.ARCHIVE_REPO.value
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_async", [False, True])
 async def test_log_spans(store: SqlAlchemyStore, is_async: bool):
@@ -9983,7 +10075,7 @@ def test_start_trace_with_assessments_missing_trace_id(store):
 
     Because the trace row already exists from step 1, the second start_trace() hits an
     IntegrityError and falls back to session.merge(). Assessments created standalone
-    (e.g. returned by custom metric functions) have trace_id=None by design. Without
+    (e.g. returned by custom metric functions) have trace_ids=None by design. Without
     backfilling trace_id before the merge, SQLAlchemy updates the assessment row with
     trace_id=NULL, violating the NOT NULL constraint on assessments.trace_id.
     """
@@ -10007,11 +10099,11 @@ def test_start_trace_with_assessments_missing_trace_id(store):
         ),
     )
 
-    # Assessment with trace_id=None, as returned by custom metric functions.
+    # Assessment with trace_ids=None, as returned by custom metric functions.
     assessment = Feedback(
         name="test_feedback",
         source=AssessmentSource(source_type=AssessmentSourceType.HUMAN, source_id="user1"),
-        trace_id=None,
+        trace_ids=None,
         value="good",
     )
 

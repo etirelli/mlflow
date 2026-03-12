@@ -1,6 +1,7 @@
 import json
 import math
 import time
+from datetime import timedelta
 from unittest import mock
 
 import pytest
@@ -1049,6 +1050,31 @@ def test_delete_traces_with_batching():
         # Verify that batch sizes are [100, 100, 50]
         batch_sizes = [len(call[1]["json"]["request_ids"]) for call in mock_http.call_args_list]
         assert batch_sizes == [100, 100, 50]
+
+
+def test_archive_traces(workspaces_enabled):
+    try:
+        service_pb2 = __import__("mlflow.protos.service_pb2", fromlist=["ArchiveTraces"])
+    except ImportError:
+        pytest.skip("ArchiveTraces not in generated protos; run generate_protos.py on Linux")
+    if not hasattr(service_pb2, "ArchiveTraces"):
+        pytest.skip("ArchiveTraces not in generated protos; run generate_protos.py on Linux")
+
+    creds = MlflowHostCreds("https://hello")
+    store = RestStore(lambda: creds)
+    response = mock.MagicMock()
+    response.status_code = 200
+    response.text = json.dumps({"traces_archived": 5})
+    with mock.patch("mlflow.utils.rest_utils.http_request", return_value=response) as mock_http:
+        res = store._archive_traces(older_than=timedelta(days=90))
+        assert res == 5
+        mock_http.assert_called()
+        call_kwargs = mock_http.call_args[1]
+        assert call_kwargs.get("method") == "POST"
+        body = call_kwargs["json"]
+        if isinstance(body, str):
+            body = json.loads(body)
+        assert body.get("older_than") == "7776000s"
 
 
 def test_set_trace_tag():

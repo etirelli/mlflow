@@ -1,6 +1,7 @@
 import functools
 import json
 import logging
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from mlflow.entities.model_registry.prompt_version import PromptVersion
@@ -60,6 +61,7 @@ from mlflow.protos.issues_pb2 import (
 )
 from mlflow.protos.service_pb2 import (
     AddDatasetToExperiments,
+    ArchiveTraces,
     BatchGetTraceInfos,
     BatchGetTraces,
     CalculateTraceFilterCorrelation,
@@ -473,6 +475,28 @@ class RestStore(WorkspaceRestStoreMixin, RestGatewayStoreMixin, AbstractStore):
             )
             res = self._call_endpoint(DeleteTraces, req_body)
             return res.traces_deleted
+
+    def _archive_traces(
+        self,
+        workspace: str | None = None,
+        older_than: timedelta | None = None,
+        trace_ids: list[str] | None = None,
+        experiment_id: str | None = None,
+        filter_string: str | None = None,
+    ) -> int:
+        msg = ArchiveTraces()
+        if workspace is not None:
+            msg.workspace = workspace
+        if older_than is not None:
+            msg.older_than.FromTimedelta(older_than)
+        if trace_ids:
+            msg.trace_ids.extend(trace_ids)
+        if experiment_id is not None:
+            msg.experiment_id = experiment_id
+        if filter_string is not None and filter_string.strip():
+            msg.filter_string = filter_string
+        res = self._call_endpoint(ArchiveTraces, message_to_json(msg))
+        return res.traces_archived or 0
 
     def get_trace_info(self, trace_id: str) -> TraceInfo:
         """
