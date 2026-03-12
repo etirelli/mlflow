@@ -82,6 +82,10 @@ The `search_traces` API uses a SQL-like Domain Specific Language (DSL) for query
 - `ILIKE`: Case-insensitive pattern matching (use `%` for wildcards)
 - `RLIKE`: Regular expression matching
 
+:::note **Archived traces**
+Traces can be [archived](/self-hosting/architecture/tracking-server#trace-archival) from the database to object storage to reduce DB size. Trace-level and column-based filters (e.g. `trace.status`, `span.name`, `span.type`, tags, metadata) still match archived traces because their metadata remains in the DB. Filters that depend on full span content (e.g. `trace.text` full-text search or JSON-based span attributes that read from stored content) do **not** match archived traces, because span content is cleared after archival.
+:::
+
 ### Example Queries
 
 #### Full Text Search

@@ -71,6 +71,10 @@ roots first to avoid collisions.
 - Existing experiments/runs keep their stored locations (legacy unprefixed paths under `default` continue to work).
 - To override the artifact root for a specific workspace, set `default_artifact_root` on the workspace (via `mlflow.create_workspace(...)` / `mlflow.update_workspace(...)` or the workspace REST API). When set, MLflow uses `<workspace_default_artifact_root>/<experiment_id>` (no `/workspaces/<workspace>` prefix) for new experiments in that workspace.
 
+## Trace archival (workspace override)
+
+- The server-wide archive repository location is set with `--trace-archival-location` (or `MLFLOW_TRACE_ARCHIVAL_LOCATION`). When workspaces are enabled, a workspace can override this by setting `trace_archival_location` on the workspace (e.g. `mlflow.create_workspace(..., trace_archival_location="s3://bucket/traces")` or the Create/Update Workspace REST API). Archived trace span data for that workspace is then stored under the workspace-specific archive repository location.
+
 ## API Limitations
 
 - `create_experiment()` disallows `artifact_location` while workspaces are enabled; MLflow assigns workspace-scoped locations.

@@ -83,6 +83,34 @@ def test_archive_delegates_to_rest_store():
     store.archive_traces.assert_called_once()
 
 
+def test_archive_passes_filter_string_to_rest_store():
+    store = _make_rest_store(archive_traces=mock.MagicMock(return_value=0))
+    archive_traces(
+        store,
+        older_than=timedelta(days=30),
+        filter_string='tag.environment = "dev"',
+    )
+    store.archive_traces.assert_called_once_with(
+        workspace=None,
+        older_than=timedelta(days=30),
+        trace_ids=None,
+        experiment_id=None,
+        filter_string='tag.environment = "dev"',
+    )
+
+
+def test_archive_passes_filter_string_to_collect_archive_candidates():
+    store = _make_local_store(collect_archive_candidates=mock.MagicMock(return_value=[]))
+    archive_traces(
+        store,
+        older_than=timedelta(days=30),
+        filter_string="state != 'ERROR'",
+    )
+    store.collect_archive_candidates.assert_called_once()
+    call_kwargs = store.collect_archive_candidates.call_args[1]
+    assert call_kwargs["filter_string"] == "state != 'ERROR'"
+
+
 def test_archive_returns_zero_when_no_candidates():
     store = _make_local_store(collect_archive_candidates=mock.MagicMock(return_value=[]))
     result = archive_traces(store, older_than=timedelta(days=30))

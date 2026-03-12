@@ -8033,9 +8033,11 @@ def test_archive_traces_requires_older_than_or_trace_id(store: SqlAlchemyStore):
         store.archive_traces(older_than=None)
 
 
-def _create_trace_with_spans(store, trace_id, experiment_id, request_time):
+def _create_trace_with_spans(store, trace_id, experiment_id, request_time, tags=None):
     """Helper: create a trace and log spans for it, returning (trace_info, span)."""
-    trace_info = _create_trace(store, trace_id, experiment_id, request_time=request_time)
+    trace_info = _create_trace(
+        store, trace_id, experiment_id, request_time=request_time, tags=tags or {}
+    )
     span = create_test_span(trace_id=trace_info.trace_id, name="test_span")
     store.log_spans(experiment_id, [span])
     return trace_info, span
@@ -8085,6 +8087,47 @@ def test_collect_archive_candidates_excludes_already_archived(store: SqlAlchemyS
         workspace=None, experiment_id=None, trace_ids=None, cutoff_ms=cutoff_ms
     )
     assert len(candidates) == 0
+
+
+def test_collect_archive_candidates_with_filter_string(store: SqlAlchemyStore):
+    exp_id = store.create_experiment("archive-filter")
+    trace_dev, _ = _create_trace_with_spans(
+        store, "tr-dev", exp_id, request_time=0, tags={"environment": "dev"}
+    )
+    trace_prod, _ = _create_trace_with_spans(
+        store, "tr-prod", exp_id, request_time=0, tags={"environment": "prod"}
+    )
+    cutoff_ms = int((time.time() + 86400) * 1000)
+    candidates_all = store.collect_archive_candidates(
+        workspace=None,
+        experiment_id=None,
+        trace_ids=None,
+        cutoff_ms=cutoff_ms,
+    )
+    assert len(candidates_all) == 2
+    candidates_dev = store.collect_archive_candidates(
+        workspace=None,
+        experiment_id=None,
+        trace_ids=None,
+        cutoff_ms=cutoff_ms,
+        filter_string='tag.environment = "dev"',
+    )
+    assert len(candidates_dev) == 1
+    assert candidates_dev[0][0] == trace_dev.trace_id
+
+
+def test_collect_archive_candidates_invalid_filter_string_raises(store: SqlAlchemyStore):
+    exp_id = store.create_experiment("archive-invalid-filter")
+    _create_trace_with_spans(store, "tr-1", exp_id, request_time=0)
+    cutoff_ms = int((time.time() + 86400) * 1000)
+    with pytest.raises(MlflowException, match=r"Invalid attribute key 'invalid'"):
+        store.collect_archive_candidates(
+            workspace=None,
+            experiment_id=None,
+            trace_ids=None,
+            cutoff_ms=cutoff_ms,
+            filter_string="invalid = 'value'",
+        )
 
 
 def test_mark_trace_archived_clears_content_and_sets_tags(store: SqlAlchemyStore):

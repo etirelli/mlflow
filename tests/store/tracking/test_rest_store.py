@@ -1077,6 +1077,30 @@ def test_archive_traces(workspaces_enabled):
         assert body.get("older_than") == "7776000s"
 
 
+def test_archive_traces_forwards_filter_string(workspaces_enabled):
+    try:
+        __import__("mlflow.protos.service_pb2", fromlist=["ArchiveTraces"])
+    except ImportError:
+        pytest.skip("ArchiveTraces not in generated protos; run generate_protos.py on Linux")
+
+    creds = MlflowHostCreds("https://hello")
+    store = RestStore(lambda: creds)
+    response = mock.MagicMock()
+    response.status_code = 200
+    response.text = json.dumps({"traces_archived": 2})
+    with mock.patch("mlflow.utils.rest_utils.http_request", return_value=response) as mock_http:
+        store._archive_traces(
+            older_than=timedelta(days=30),
+            filter_string='tag.environment = "dev"',
+        )
+        mock_http.assert_called_once()
+        call_kwargs = mock_http.call_args[1]
+        body = call_kwargs["json"]
+        if isinstance(body, str):
+            body = json.loads(body)
+        assert body.get("filter_string") == 'tag.environment = "dev"'
+
+
 def test_set_trace_tag():
     creds = MlflowHostCreds("https://hello")
     store = RestStore(lambda: creds)
