@@ -33,7 +33,7 @@ class TrackingStoreRegistry(StoreRegistry):
                 is passed to the constructor of the implementation.
             artifact_uri: Artifact repository URI. Passed through to the tracking store
                 implementation.
-            trace_archival_uri: Optional trace repository root URI. Passed through to the tracking
+            trace_archival_uri: Optional archive repository root URI. Passed through to the tracking
                 store implementation when supported.
 
         Returns:

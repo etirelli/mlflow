@@ -510,6 +510,19 @@ def _validate_static_prefix(ctx, param, value):
     help="Enable backwards compatible workspaces mode for logical isolation of experiments, "
     + "registered models, and prompts.",
 )
+@click.option(
+    "--trace-archival-location",
+    envvar="MLFLOW_TRACE_ARCHIVAL_LOCATION",
+    metavar="URI",
+    default=None,
+    help=(
+        "Destination URI for the archive repository (archived trace span data). "
+        "If not specified, the archive repository uses the same location as "
+        "--artifacts-destination. "
+        "Can be overridden per workspace via the workspace's trace_archival_location. "
+        "Supports the same backends as artifacts (S3, GCS, Azure, local, etc.)."
+    ),
+)
 def server(
     ctx,
     backend_store_uri,
@@ -536,6 +549,7 @@ def server(
     secrets_cache_max_size,
     workspace_store_uri,
     enable_workspaces,
+    trace_archival_location,
 ):
     """
     Run the MLflow tracking server with built-in security middleware.
@@ -643,11 +657,13 @@ def server(
 
     if not artifacts_only:
         try:
+            effective_trace_archival = trace_archival_location or artifacts_destination
             initialize_backend_stores(
                 backend_store_uri,
                 registry_store_uri,
                 default_artifact_root,
                 workspace_store_uri=workspace_store_uri,
+                trace_archival_location=effective_trace_archival,
             )
         except Exception as e:
             _logger.error("Error initializing backend store")
@@ -701,6 +717,7 @@ def server(
             env_file=env_file,
             secrets_cache_ttl=secrets_cache_ttl,
             secrets_cache_max_size=secrets_cache_max_size,
+            trace_archival_location=trace_archival_location,
         )
     except ShellCommandException:
         eprint("Running the mlflow server failed. Please see the logs above for details.")

@@ -62,6 +62,7 @@ from mlflow.entities.logged_model_tag import LoggedModelTag
 from mlflow.entities.model_registry import ModelVersionTag, RegisteredModelTag
 from mlflow.entities.model_registry.prompt_version import IS_PROMPT_TAG_KEY
 from mlflow.entities.multipart_upload import MultipartUploadPart
+from mlflow.entities.trace_data import TraceData
 from mlflow.entities.trace_info import TraceInfo
 from mlflow.entities.trace_info_v2 import TraceInfoV2
 from mlflow.entities.trace_metrics import MetricAggregation, MetricViewType
@@ -142,6 +143,7 @@ from mlflow.protos.prompt_optimization_pb2 import (
 )
 from mlflow.protos.service_pb2 import (
     AddDatasetToExperiments,
+    ArchiveTraces,
     AttachModelToGatewayEndpoint,
     BatchGetTraceInfos,
     BatchGetTraces,
@@ -291,6 +293,7 @@ from mlflow.telemetry.utils import (
     fetch_ui_telemetry_config,
     is_telemetry_disabled,
 )
+from mlflow.tracing.constant import SpansLocation, TraceTagKey
 from mlflow.tracing.utils.artifact_utils import (
     TRACE_DATA_FILE_NAME,
     get_artifact_uri_for_trace,
@@ -372,13 +375,15 @@ class TrackingStoreRegistryWrapper(TrackingStoreRegistry):
         self.register_entrypoints()
 
     @classmethod
-    def _get_file_store(cls, store_uri, artifact_uri):
+    def _get_file_store(cls, store_uri, artifact_uri, trace_archival_uri=None):
+        # File store has no separate trace archival root; traces live under the experiment's
+        # artifact_location. trace_archival_uri is accepted only for a unified builder signature.
         from mlflow.store.tracking.file_store import FileStore
 
         return FileStore(store_uri, artifact_uri)
 
     @classmethod
-    def _get_sqlalchemy_store(cls, store_uri, artifact_uri):
+    def _get_sqlalchemy_store(cls, store_uri, artifact_uri, trace_archival_uri=None):
         from mlflow.store.tracking.sqlalchemy_store import SqlAlchemyStore
         from mlflow.store.tracking.sqlalchemy_workspace_store import (
             WorkspaceAwareSqlAlchemyStore,
@@ -387,10 +392,10 @@ class TrackingStoreRegistryWrapper(TrackingStoreRegistry):
         store_cls = (
             WorkspaceAwareSqlAlchemyStore if MLFLOW_ENABLE_WORKSPACES.get() else SqlAlchemyStore
         )
-        return store_cls(store_uri, artifact_uri)
+        return store_cls(store_uri, artifact_uri, trace_archival_uri)
 
     @classmethod
-    def _get_databricks_rest_store(cls, store_uri, artifact_uri):
+    def _get_databricks_rest_store(cls, store_uri, artifact_uri, trace_archival_uri=None):
         return DatabricksTracingRestStore(partial(get_databricks_host_creds, store_uri))
 
 
@@ -588,14 +593,24 @@ def _get_proxied_run_artifact_destination_path(proxied_artifact_root, relative_p
 def _get_tracking_store(
     backend_store_uri: str | None = None,
     default_artifact_root: str | None = None,
+    trace_archival_location: str | None = None,
 ) -> AbstractTrackingStore:
-    from mlflow.server import ARTIFACT_ROOT_ENV_VAR, BACKEND_STORE_URI_ENV_VAR
+    from mlflow.server import (
+        ARTIFACT_ROOT_ENV_VAR,
+        BACKEND_STORE_URI_ENV_VAR,
+        TRACE_ARCHIVAL_LOCATION_ENV_VAR,
+    )
 
     global _tracking_store
     if _tracking_store is None:
         store_uri = backend_store_uri or os.environ.get(BACKEND_STORE_URI_ENV_VAR, None)
         artifact_root = default_artifact_root or os.environ.get(ARTIFACT_ROOT_ENV_VAR, None)
-        _tracking_store = _tracking_store_registry.get_store(store_uri, artifact_root)
+        trace_archival = trace_archival_location or os.environ.get(
+            TRACE_ARCHIVAL_LOCATION_ENV_VAR, None
+        )
+        _tracking_store = _tracking_store_registry.get_store(
+            store_uri, artifact_root, trace_archival_uri=trace_archival
+        )
         utils.set_tracking_uri(store_uri)
     return _tracking_store
 
@@ -662,8 +677,11 @@ def initialize_backend_stores(
     registry_store_uri: str | None = None,
     default_artifact_root: str | None = None,
     workspace_store_uri: str | None = None,
+    trace_archival_location: str | None = None,
 ) -> None:
-    tracking_store = _get_tracking_store(backend_store_uri, default_artifact_root)
+    tracking_store = _get_tracking_store(
+        backend_store_uri, default_artifact_root, trace_archival_location
+    )
     registry_store = None
     try:
         registry_store = _get_model_registry_store(registry_store_uri)
@@ -1155,6 +1173,7 @@ def _create_workspace_handler():
             "name": [_assert_required, _assert_string],
             "description": [_assert_string],
             "default_artifact_root": [_assert_string],
+            "trace_archival_location": [_assert_string],
         },
     )
 
@@ -1169,6 +1188,12 @@ def _create_workspace_handler():
         if request_message.HasField("default_artifact_root")
         else None
     )
+    trace_archival_location = (
+        request_message.trace_archival_location
+        if hasattr(request_message, "trace_archival_location")
+        and request_message.HasField("trace_archival_location")
+        else None
+    )
     default_artifact_root = _validate_workspace_default_artifact_root(default_artifact_root)
     _ensure_artifact_root_available(default_artifact_root)
     store = _get_workspace_store()
@@ -1178,6 +1203,7 @@ def _create_workspace_handler():
                 name=request_message.name,
                 description=description,
                 default_artifact_root=default_artifact_root,
+                trace_archival_location=trace_archival_location,
             )
         )
     except NotImplementedError:
@@ -1211,17 +1237,24 @@ def _update_workspace_handler(workspace_name: str):
         schema={
             "description": [_assert_string],
             "default_artifact_root": [_assert_string],
+            "trace_archival_location": [_assert_string],
         },
     )
 
     has_description = request_message.HasField("description")
     has_artifact_root = request_message.HasField("default_artifact_root")
+    has_trace_archival_location = hasattr(
+        request_message, "trace_archival_location"
+    ) and request_message.HasField("trace_archival_location")
 
-    if not has_description and not has_artifact_root:
+    if not has_description and not has_artifact_root and not has_trace_archival_location:
         raise MlflowException.invalid_parameter_value("Workspace update must have at least one key")
 
     description = request_message.description if has_description else None
     default_artifact_root = request_message.default_artifact_root if has_artifact_root else None
+    trace_archival_location = (
+        request_message.trace_archival_location if has_trace_archival_location else None
+    )
     default_artifact_root = _validate_workspace_default_artifact_root(default_artifact_root)
 
     # If the user is clearing the workspace artifact root (empty string), ensure the server
@@ -1236,6 +1269,7 @@ def _update_workspace_handler(workspace_name: str):
                 name=workspace_name,
                 description=description,
                 default_artifact_root=default_artifact_root,
+                trace_archival_location=trace_archival_location,
             )
         )
     except NotImplementedError:
@@ -3673,13 +3707,67 @@ def _delete_traces():
             return getattr(request_message, field)
         return None
 
-    traces_deleted = _get_tracking_store().delete_traces(
+    from mlflow.tracing.trace_repo import delete_traces as _delete_traces_orchestrator
+
+    traces_deleted = _delete_traces_orchestrator(
+        _get_tracking_store(),
         experiment_id=request_message.experiment_id,
         max_timestamp_millis=_get_nullable_field("max_timestamp_millis"),
         max_traces=_get_nullable_field("max_traces"),
         trace_ids=request_message.request_ids,
     )
     return _wrap_response(DeleteTraces.Response(traces_deleted=traces_deleted))
+
+
+@catch_mlflow_exception
+@_disable_if_artifacts_only
+def _archive_traces():
+    """
+    A request handler for `POST /mlflow/traces/archive-traces` to archive traces from the
+    tracking store to the archive repository.
+    """
+    request_message = _get_request_message(
+        ArchiveTraces(),
+        schema={
+            "workspace": [_assert_string],
+            "older_than": [_assert_string],
+            "trace_ids": [_assert_array, _assert_item_type_string],
+            "experiment_id": [_assert_string],
+            "filter_string": [_assert_string],
+        },
+    )
+
+    def _get_nullable_field(field):
+        if request_message.HasField(field):
+            return getattr(request_message, field)
+        return None
+
+    workspace = _get_nullable_field("workspace")
+    older_than = None
+    if request_message.HasField("older_than"):
+        older_than = request_message.older_than.ToTimedelta()
+    trace_ids = list(request_message.trace_ids) if request_message.trace_ids else None
+    experiment_id = _get_nullable_field("experiment_id")
+    filter_string = _get_nullable_field("filter_string")
+
+    if workspace and not MLFLOW_ENABLE_WORKSPACES.get():
+        raise MlflowException.invalid_parameter_value(
+            "workspace requires workspaces to be enabled on the server."
+        )
+
+    from mlflow.tracing.trace_repo import archive_traces as _archive_traces_orchestrator
+
+    store = _get_tracking_store()
+    total_archived = _archive_traces_orchestrator(
+        store,
+        workspace=workspace,
+        older_than=older_than,
+        trace_ids=trace_ids,
+        experiment_id=experiment_id,
+        filter_string=filter_string,
+    )
+
+    return _wrap_response(ArchiveTraces.Response(traces_archived=total_archived))
 
 
 @catch_mlflow_exception
@@ -3872,6 +3960,8 @@ def get_trace_artifact_handler() -> Response:
             error_code=BAD_REQUEST,
         )
 
+    from mlflow.tracing.trace_repo import load_archived_spans
+
     store = _get_tracking_store()
 
     if path:
@@ -3910,7 +4000,15 @@ def get_trace_artifact_handler() -> Response:
     trace_data = _fetch_trace_data_from_store(store, request_id)
     if trace_data is None:
         trace_info = store.get_trace_info(request_id)
-        trace_data = _get_trace_artifact_repo(trace_info).download_trace_data()
+        spans_location = trace_info.tags.get(TraceTagKey.SPANS_LOCATION)
+        if spans_location == SpansLocation.ARCHIVE_REPO.value:
+            try:
+                spans = load_archived_spans(store, trace_info)
+                trace_data = TraceData(spans=spans).to_dict()
+            except MlflowTracingException:
+                pass
+        if trace_data is None:
+            trace_data = _get_trace_artifact_repo(trace_info).download_trace_data()
 
     # Write data to a BytesIO buffer instead of needing to save a temp file
     buf = io.BytesIO()
@@ -6695,6 +6793,7 @@ HANDLERS = {
     GetTraceInfoV3: _get_trace_info_v3,
     SearchTracesV3: _search_traces_v3,
     DeleteTracesV3: _delete_traces,
+    ArchiveTraces: _archive_traces,
     CalculateTraceFilterCorrelation: _calculate_trace_filter_correlation,
     SetTraceTagV3: _set_trace_tag_v3,
     DeleteTraceTagV3: _delete_trace_tag_v3,

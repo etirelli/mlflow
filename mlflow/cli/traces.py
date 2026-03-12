@@ -9,6 +9,7 @@ AVAILABLE COMMANDS:
     search              Search traces with filtering, sorting, and field selection
     get                 Retrieve detailed trace information as JSON
     delete              Delete traces by ID or timestamp criteria
+    archive             Archive traces by age/size and optionally by workspace
     set-tag             Add tags to traces
     delete-tag          Remove tags from traces
     log-feedback        Log evaluation feedback/scores to traces
@@ -68,6 +69,7 @@ For detailed help on any command, use:
 import json
 import os
 import warnings
+from datetime import timedelta
 from typing import Literal
 
 import click
@@ -471,6 +473,113 @@ def delete_traces(
         max_traces=max_traces,
     )
     click.echo(f"Deleted {count} trace(s) from experiment {experiment_id}.")
+
+
+def _parse_older_than(older_than: str) -> timedelta:
+    """Parse a duration string (e.g. '90', '90d') to a timedelta."""
+    s = older_than.strip().lower()
+    s = s.removesuffix("d")
+    err_msg = (
+        f"Could not parse duration from '{older_than}'. Use a whole number of days, e.g. 90 or 90d."
+    )
+    try:
+        days = int(s)
+    except ValueError:
+        raise click.UsageError(err_msg)
+    if days <= 0:
+        raise click.UsageError(f"--older-than must be a positive number of days, got {days}.")
+    return timedelta(days=days)
+
+
+@commands.command("archive")
+@mlflow_mcp(tool_name="archive_traces")
+@click.option(
+    "--workspace",
+    envvar="MLFLOW_WORKSPACE",
+    type=click.STRING,
+    help="Scope archival to a single workspace. If omitted, the archival policy is applied "
+    "globally across all experiments.",
+)
+@click.option(
+    "--older-than",
+    type=click.STRING,
+    help="Only archive traces older than this many days (e.g. 90 or 90d).",
+)
+@click.option(
+    "--trace-ids",
+    type=click.STRING,
+    default=None,
+    help="Archive only these traces (comma-separated IDs). When set, --older-than is not required.",
+)
+@click.option(
+    "--experiment-id",
+    "-x",
+    envvar=MLFLOW_EXPERIMENT_ID.name,
+    type=click.STRING,
+    default=None,
+    help=(
+        "Limit archival to traces in this experiment. Can be set via MLFLOW_EXPERIMENT_ID env var."
+    ),
+)
+@click.option(
+    "--filter-string",
+    type=click.STRING,
+    default=None,
+    help="Search filter for which traces to archive (same syntax as search_traces). "
+    "E.g. state != 'ERROR', tag.environment = 'dev'.",
+)
+def archive_traces(
+    workspace: str | None = None,
+    older_than: str | None = None,
+    trace_ids: str | None = None,
+    experiment_id: str | None = None,
+    filter_string: str | None = None,
+) -> None:
+    """
+    Archive traces from the tracking store to the archive repository.
+
+    Moves span content to the configured trace archival location (traces.pb) and clears
+    span content in the database. Specify at least one of --older-than or --trace-ids.
+
+    \b
+    Examples:
+    # Archive traces older than 90 days (globally)
+    mlflow traces archive --older-than 90d
+
+    \b
+    # Archive specific traces by ID (comma-separated)
+    mlflow traces archive --trace-ids tr-abc123,tr-def456
+
+    \b
+    # Archive traces in a specific experiment
+    mlflow traces archive --experiment-id 1 --older-than 30d
+
+    \b
+    # Archive in a specific workspace
+    mlflow traces archive --workspace my-ws --older-than 30d
+    """
+    from mlflow.exceptions import MlflowException
+
+    older_than_duration = None
+    if older_than is not None:
+        older_than_duration = _parse_older_than(older_than)
+
+    trace_id_list = [x.strip() for x in trace_ids.split(",")] if trace_ids else None
+    if trace_id_list is None and older_than_duration is None:
+        raise click.UsageError("Specify at least one of --older-than or --trace-ids.")
+
+    client = TracingClient()
+    try:
+        count = client.archive_traces(
+            workspace=workspace,
+            older_than=older_than_duration,
+            trace_ids=trace_id_list,
+            experiment_id=experiment_id,
+            filter_string=filter_string,
+        )
+    except MlflowException as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"Archived {count} trace(s).")
 
 
 @commands.command("set-tag")
