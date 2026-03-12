@@ -260,6 +260,48 @@ def test_resolve_artifact_root_cache_clears_when_override_removed(workspace_stor
     )
 
 
+def test_resolve_trace_archival_root_returns_none_when_not_set(workspace_store):
+    workspace_store.create_workspace(Workspace(name="team-a", description=None))
+    assert workspace_store.resolve_trace_archival_root("/global/root", "team-a") is None
+    assert (
+        workspace_store.resolve_trace_archival_root("/global/root", DEFAULT_WORKSPACE_NAME) is None
+    )
+
+
+def test_resolve_trace_archival_root_returns_workspace_override(workspace_store):
+    workspace_store.create_workspace(
+        Workspace(
+            name="team-a",
+            description=None,
+            trace_archival_location="s3://team-a-traces",
+        )
+    )
+    result = workspace_store.resolve_trace_archival_root("/global/root", "team-a")
+    assert result == "s3://team-a-traces"
+
+
+def test_resolve_trace_archival_root_updates_on_change(workspace_store):
+    workspace_store.create_workspace(Workspace(name="team-b", description=None))
+    assert workspace_store.resolve_trace_archival_root("/global/root", "team-b") is None
+
+    workspace_store.update_workspace(
+        Workspace(name="team-b", trace_archival_location="s3://new-traces")
+    )
+    assert workspace_store.resolve_trace_archival_root("/global/root", "team-b") == "s3://new-traces"
+
+
+def test_resolve_trace_archival_root_clears_on_empty_string(workspace_store):
+    workspace_store.create_workspace(
+        Workspace(name="team-c", description=None, trace_archival_location="s3://old-traces")
+    )
+    assert (
+        workspace_store.resolve_trace_archival_root("/global/root", "team-c") == "s3://old-traces"
+    )
+
+    workspace_store.update_workspace(Workspace(name="team-c", trace_archival_location=""))
+    assert workspace_store.resolve_trace_archival_root("/global/root", "team-c") is None
+
+
 def test_get_default_workspace_returns_default(workspace_store):
     default_ws = workspace_store.get_default_workspace()
     assert default_ws.name == DEFAULT_WORKSPACE_NAME

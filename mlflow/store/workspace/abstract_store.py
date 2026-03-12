@@ -91,6 +91,17 @@ class AbstractStore(ABC):
 
         return default_artifact_root, True
 
+    def resolve_trace_archival_root(
+        self, global_trace_archival_root: str | None, workspace_name: str
+    ) -> str | None:
+        """
+        Allow a provider to customize the archive repository root per workspace.
+
+        Returns:
+            The workspace-specific archive repository root if set, otherwise None to use the global.
+        """
+        return None
+
 
 class WorkspaceNameValidator:
     """Validator for workspace names based on Kubernetes naming conventions."""
