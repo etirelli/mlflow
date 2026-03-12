@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from datetime import timedelta
 from typing import Sequence
 
 import mlflow
@@ -120,6 +121,30 @@ class TracingClient:
             max_timestamp_millis=max_timestamp_millis,
             max_traces=max_traces,
             trace_ids=trace_ids,
+        )
+
+    def archive_traces(
+        self,
+        workspace: str | None = None,
+        older_than: timedelta | None = None,
+        trace_ids: list[str] | None = None,
+        experiment_id: str | None = None,
+        filter_string: str | None = None,
+    ) -> int:
+        """Archive traces from the tracking store to the archive repository.
+
+        filter_string uses the same syntax as search_traces (e.g. state != 'ERROR',
+        tag.environment = 'dev', feedback.quality IS NOT NULL).
+        """
+        from mlflow.tracing.trace_repo import archive_traces as _archive_traces_orchestrator
+
+        return _archive_traces_orchestrator(
+            self.store,
+            workspace=workspace,
+            older_than=older_than,
+            trace_ids=trace_ids,
+            experiment_id=experiment_id,
+            filter_string=filter_string,
         )
 
     def get_trace_info(self, trace_id: str) -> TraceInfo:

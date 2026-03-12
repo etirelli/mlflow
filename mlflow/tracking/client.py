@@ -334,7 +334,11 @@ class MlflowClient:
         return self._get_workspace_client().list_workspaces()
 
     def create_workspace(
-        self, name: str, description: str | None = None, default_artifact_root: str | None = None
+        self,
+        name: str,
+        description: str | None = None,
+        default_artifact_root: str | None = None,
+        trace_archival_location: str | None = None,
     ) -> Workspace:
         """Create a new workspace.
 
@@ -342,12 +346,16 @@ class MlflowClient:
             name: The workspace name (alphanumeric, hyphens, underscores only).
             description: Optional description of the workspace.
             default_artifact_root: Optional artifact root URI; falls back to server default.
+            trace_archival_location: Optional trace archival location URI for this workspace.
 
         Returns:
             The newly created workspace.
         """
         return self._get_workspace_client().create_workspace(
-            name, description, default_artifact_root=default_artifact_root
+            name,
+            description,
+            default_artifact_root=default_artifact_root,
+            trace_archival_location=trace_archival_location,
         )
 
     def get_workspace(self, name: str) -> Workspace:
@@ -356,7 +364,11 @@ class MlflowClient:
         return self._get_workspace_client().get_workspace(name)
 
     def update_workspace(
-        self, name: str, description: str | None = None, default_artifact_root: str | None = None
+        self,
+        name: str,
+        description: str | None = None,
+        default_artifact_root: str | None = None,
+        trace_archival_location: str | None = None,
     ) -> Workspace:
         """Update metadata for an existing workspace.
 
@@ -364,12 +376,16 @@ class MlflowClient:
             name: The name of the workspace to update.
             description: New description, or ``None`` to leave unchanged.
             default_artifact_root: New artifact root URI, empty string to clear, or ``None``.
+            trace_archival_location: Trace archival URI, or ``None`` to leave unchanged.
 
         Returns:
             The updated workspace.
         """
         return self._get_workspace_client().update_workspace(
-            name, description, default_artifact_root=default_artifact_root
+            name,
+            description,
+            default_artifact_root=default_artifact_root,
+            trace_archival_location=trace_archival_location,
         )
 
     def delete_workspace(self, name: str, mode: str = WorkspaceDeletionMode.RESTRICT) -> None:

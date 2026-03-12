@@ -497,7 +497,7 @@ class WorkspaceAwareSqlAlchemyStore(WorkspaceAwareMixin, SqlAlchemyStore):
 
     def _get_trace_repository_root(self, workspace_name: str) -> str:
         """
-        Resolve the trace repository root for the workspace.
+        Resolve the archive repository root for the workspace.
 
         Uses the workspace provider (same as _get_artifact_location) to resolve a
         workspace-specific trace_archival_location if set, otherwise the global root.
